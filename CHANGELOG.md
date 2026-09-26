@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.319.2 (2026-09-26)
+
+### Bug Fixes
+
+- **screener**: Resolve source leads with cited evidence
+  ([#2399](https://github.com/ditto-assistant/ditto-subnet/pull/2399),
+  [`03574ac`](https://github.com/ditto-assistant/ditto-subnet/commit/03574ac504c8538b3b8b3b71a002c272beb906f8))
+
+
 ## v0.319.1 (2026-09-26)
 
 ### Bug Fixes
