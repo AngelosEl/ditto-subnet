@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.319.13 (2026-09-27)
+
+### Bug Fixes
+
+- **screener**: Remove retired fleet lane unit
+  ([#2435](https://github.com/ditto-assistant/ditto-subnet/pull/2435),
+  [`dea7bef`](https://github.com/ditto-assistant/ditto-subnet/commit/dea7befea1a41b04e9508bb414d9ea15d9adc114))
+
+
 ## v0.319.12 (2026-09-27)
 
 ### Bug Fixes
