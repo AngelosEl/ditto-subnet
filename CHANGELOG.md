@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.321.3 (2026-09-27)
+
+### Bug Fixes
+
+- **platform**: Accept enforced source-only canary reports
+  ([#2439](https://github.com/ditto-assistant/ditto-subnet/pull/2439),
+  [`d238c6e`](https://github.com/ditto-assistant/ditto-subnet/commit/d238c6e5387ab607ac248bb48ce0a77447bbb6d4))
+
+
 ## v0.321.2 (2026-09-27)
 
 ### Bug Fixes
