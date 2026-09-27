@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.321.2 (2026-09-27)
+
+### Bug Fixes
+
+- **screener**: Preview enforced source decision in canaries
+  ([#2438](https://github.com/ditto-assistant/ditto-subnet/pull/2438),
+  [`e3f2f17`](https://github.com/ditto-assistant/ditto-subnet/commit/e3f2f171ce0ff56cd767d5895dc24233cf3942ea))
+
+
 ## v0.321.1 (2026-09-27)
 
 ### Bug Fixes
