@@ -2,6 +2,20 @@
 
 <!-- version list -->
 
+## v0.320.0 (2026-09-27)
+
+### Chores
+
+- **screener**: Retire stale Targon operator guidance
+  ([#2436](https://github.com/ditto-assistant/ditto-subnet/pull/2436),
+  [`55f1aba`](https://github.com/ditto-assistant/ditto-subnet/commit/55f1aba965b7bbbb81e6b9c9120d56affd1a156d))
+
+### Features
+
+- **screener**: Broker bounded source-navigation shell
+  ([`201ce84`](https://github.com/ditto-assistant/ditto-subnet/commit/201ce84a3ae4281082794b81b48cc703ec852467))
+
+
 ## v0.319.13 (2026-09-27)
 
 ### Bug Fixes
