@@ -2,6 +2,25 @@
 
 <!-- version list -->
 
+## v0.319.10 (2026-09-27)
+
+### Bug Fixes
+
+- **screener**: Unblock orchestrator release lint
+  ([#2431](https://github.com/ditto-assistant/ditto-subnet/pull/2431),
+  [`05f221b`](https://github.com/ditto-assistant/ditto-subnet/commit/05f221bb1b93565a0c4ccdc54a1f451782b9f510))
+
+- **screener**: Unblock Targon retirement release
+  ([#2430](https://github.com/ditto-assistant/ditto-subnet/pull/2430),
+  [`2ae122c`](https://github.com/ditto-assistant/ditto-subnet/commit/2ae122cdc0efc7f6ee3479becc7efec835599001))
+
+### Refactoring
+
+- **screener**: Retire Targon screening paths
+  ([#2357](https://github.com/ditto-assistant/ditto-subnet/pull/2357),
+  [`69c80f6`](https://github.com/ditto-assistant/ditto-subnet/commit/69c80f67df25161444bc4054553cc7f5c8c31d3e))
+
+
 ## v0.319.9 (2026-09-27)
 
 ### Bug Fixes
