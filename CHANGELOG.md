@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.319.3 (2026-09-27)
+
+### Bug Fixes
+
+- **screener**: Honor cited L2 resolution of low L1 leads
+  ([#2400](https://github.com/ditto-assistant/ditto-subnet/pull/2400),
+  [`7957d66`](https://github.com/ditto-assistant/ditto-subnet/commit/7957d66c3f00fa69a82e03fc1b4b80633733ca9a))
+
+
 ## v0.319.2 (2026-09-26)
 
 ### Bug Fixes
