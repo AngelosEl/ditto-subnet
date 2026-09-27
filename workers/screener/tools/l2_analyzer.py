@@ -380,6 +380,7 @@ def integrity_surfaces(_: dict[str, object]) -> object:
 
     These locations are routing hints, never policy evidence. The model must read
     and causally trace any relevant locations before reaching a disposition.
+    A published starter digest proves byte identity, not runtime role.
     """
     grouped: dict[str, list[dict[str, object]]] = {
         name: [] for name in INTEGRITY_SURFACES
@@ -387,17 +388,52 @@ def integrity_surfaces(_: dict[str, object]) -> object:
     counts: dict[str, int] = dict.fromkeys(INTEGRITY_SURFACES, 0)
     files, workspace_truncated = _files_with_truncation()
     omitted: list[dict[str, object]] = []
+    nontext: list[dict[str, object]] = []
+    try:
+        starter_models = {
+            str(manifest["files"]["fixtures/models/cross-encoder.onnx"])
+            for manifest in _starter_manifests()
+            if isinstance(manifest.get("files"), dict)
+            and "fixtures/models/cross-encoder.onnx" in manifest["files"]
+        }
+    except (OSError, ValueError):
+        starter_models = set()
     for path in files:
         relative = _relative(path)
-        if path.stat().st_size > MAX_FILE_BYTES:
-            omitted.append({"path": relative, "reason": "read_cap"})
+        size = path.stat().st_size
+        if size > MAX_FILE_BYTES:
+            if (
+                size <= MAX_DIGEST_BYTES
+                and relative == "fixtures/models/cross-encoder.onnx"
+            ):
+                try:
+                    digest = _file_sha256(path)
+                except OSError:
+                    digest = None
+                if digest in starter_models:
+                    nontext.append(
+                        {
+                            "path": relative,
+                            "bytes": size,
+                            "sha256": digest,
+                            "provenance": "starter_manifest_digest",
+                        }
+                    )
+                    continue
+            omitted.append(
+                {
+                    "path": relative,
+                    "reason": "digest_cap" if size > MAX_DIGEST_BYTES else "read_cap",
+                }
+            )
             continue
         try:
             raw = _bytes(path)
             if not _is_text(raw):
                 continue
             lines = raw.decode("utf-8").splitlines()
-        except (UnicodeDecodeError, ValueError):
+        except (OSError, UnicodeDecodeError, ValueError):
+            omitted.append({"path": relative, "reason": "read_error"})
             continue
         for number, line in enumerate(lines, 1):
             for name, pattern in INTEGRITY_SURFACES.items():
@@ -422,7 +458,9 @@ def integrity_surfaces(_: dict[str, object]) -> object:
         },
         "omitted": omitted[:32],
         "omitted_count": len(omitted),
-        "truncated": workspace_truncated or bool(omitted),
+        "nontext": nontext[:32],
+        "nontext_count": len(nontext),
+        "truncated": workspace_truncated or bool(omitted) or len(nontext) > 32,
     }
 
 

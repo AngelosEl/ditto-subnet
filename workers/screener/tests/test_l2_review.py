@@ -6316,6 +6316,72 @@ async def test_integrity_scan_is_not_limited_to_named_languages(tmp_path: Path) 
     assert hits["surfaces"]["model_authority"]["hits"][0]["path"] == "agent.rb"
 
 
+async def test_integrity_scan_keeps_unknown_large_binary_incomplete(
+    tmp_path: Path,
+) -> None:
+    payload = b"\x00" + b"x" * (2 * 1024 * 1024)
+    (tmp_path / "model.onnx").write_bytes(payload)
+    (tmp_path / "agent.py").write_text("def run(): return model_answer()\n")
+    result = json.loads(
+        await InProcessAnalyzerHarness().run(tmp_path, "integrity_surfaces", {})
+    )
+    assert result["truncated"] is True
+    assert result["omitted"] == [{"path": "model.onnx", "reason": "read_cap"}]
+    assert result["nontext_count"] == 0
+    assert result["surfaces"]["model_authority"]["hits"][0]["path"] == "agent.py"
+
+
+async def test_integrity_scan_accepts_exact_starter_model_digest(
+    tmp_path: Path,
+) -> None:
+    stock = (
+        ROOT.parent.parent
+        / "miners/dittobench-starter-kit/fixtures/models/cross-encoder.onnx"
+    )
+    payload = stock.read_bytes()
+    target = tmp_path / "fixtures/models/cross-encoder.onnx"
+    target.parent.mkdir(parents=True)
+    target.write_bytes(payload)
+    (tmp_path / "agent.py").write_text("def run(): return model_answer()\n")
+    result = json.loads(
+        await InProcessAnalyzerHarness().run(tmp_path, "integrity_surfaces", {})
+    )
+    assert result["truncated"] is False
+    assert result["omitted_count"] == 0
+    assert result["nontext"] == [
+        {
+            "path": "fixtures/models/cross-encoder.onnx",
+            "bytes": len(payload),
+            "sha256": hashlib.sha256(payload).hexdigest(),
+            "provenance": "starter_manifest_digest",
+        }
+    ]
+
+
+async def test_integrity_scan_keeps_nul_bearing_large_source_incomplete(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "agent.py").write_bytes(
+        b"model_answer\n\x00" + b"x" * (2 * 1024 * 1024)
+    )
+    result = json.loads(
+        await InProcessAnalyzerHarness().run(tmp_path, "integrity_surfaces", {})
+    )
+    assert result["truncated"] is True
+    assert result["omitted"] == [{"path": "agent.py", "reason": "read_cap"}]
+    assert result["nontext_count"] == 0
+
+
+async def test_integrity_scan_keeps_large_text_incomplete(tmp_path: Path) -> None:
+    (tmp_path / "agent.py").write_text("model_answer\n" + "x" * (2 * 1024 * 1024))
+    result = json.loads(
+        await InProcessAnalyzerHarness().run(tmp_path, "integrity_surfaces", {})
+    )
+    assert result["truncated"] is True
+    assert result["omitted"] == [{"path": "agent.py", "reason": "read_cap"}]
+    assert result["nontext_count"] == 0
+
+
 @pytest.mark.integration
 async def test_real_analyzer_container_isolated_and_canonical_starter_clean(
     tmp_path: Path,
