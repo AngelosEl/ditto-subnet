@@ -16,6 +16,8 @@ def _args(**overrides: object) -> argparse.Namespace:
     base: dict[str, object] = {
         "agent_id": uuid4(),
         "json": False,
+        "bench_version": None,
+        "since": None,
         "network": "local",
         "chain_endpoint": None,
         "verbose": False,

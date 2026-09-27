@@ -213,6 +213,60 @@ class TestMinerReadsTheirOwnHarnessLogs:
         assert attempt["container_log_tail"] is None
         assert attempt["stale"] is False
 
+    async def test_owner_can_address_an_agent_by_its_short_prefix(
+        self,
+        app: FastAPI,
+        client: httpx.AsyncClient,
+        session_maker: async_sessionmaker[AsyncSession],
+    ) -> None:
+        """``ditto logs 5fdadd33`` is how miners actually refer to agents."""
+        miner = _miner()
+        agent_id = await _seed_agent(
+            session_maker,
+            status=AgentStatus.EVALUATING,
+            miner_hotkey=miner.ss58_address,
+        )
+        await _seed_ticket(session_maker, agent_id)
+        await _fail_ticket(session_maker, agent_id)
+        _install_db(app, session_maker)
+        _install_chain(app)
+        token = await _login(client, keypair=miner)
+
+        got = await client.get(
+            f"/api/v1/me/agents/{str(agent_id)[:8]}/harness-logs",
+            headers={"authorization": f"Bearer {token}"},
+        )
+
+        assert got.status_code == 200, got.text
+        assert got.json()["agent_id"] == str(agent_id)
+        assert got.json()["attempts"][0]["container_log_tail"] == _TAIL
+
+    async def test_bench_version_filter_excludes_other_eras(
+        self,
+        app: FastAPI,
+        client: httpx.AsyncClient,
+        session_maker: async_sessionmaker[AsyncSession],
+    ) -> None:
+        miner = _miner()
+        agent_id = await _seed_agent(
+            session_maker,
+            status=AgentStatus.EVALUATING,
+            miner_hotkey=miner.ss58_address,
+        )
+        await _seed_ticket(session_maker, agent_id)
+        _install_db(app, session_maker)
+        _install_chain(app)
+        token = await _login(client, keypair=miner)
+
+        got = await client.get(
+            f"/api/v1/me/agents/{agent_id}/harness-logs",
+            params={"bench_version": _BENCH_VERSION + 1},
+            headers={"authorization": f"Bearer {token}"},
+        )
+
+        assert got.status_code == 200, got.text
+        assert got.json()["attempts"] == []
+
 
 @pytest.mark.asyncio
 class TestEveryDenialLooksIdentical:
@@ -240,6 +294,27 @@ class TestEveryDenialLooksIdentical:
         )
         assert got.status_code == 404, got.text
         assert _TAIL not in got.text
+
+    async def test_a_too_short_prefix_is_refused(
+        self,
+        app: FastAPI,
+        client: httpx.AsyncClient,
+        session_maker: async_sessionmaker[AsyncSession],
+    ) -> None:
+        miner = _miner()
+        agent_id = await _seed_agent(
+            session_maker,
+            status=AgentStatus.EVALUATING,
+            miner_hotkey=miner.ss58_address,
+        )
+        _install_db(app, session_maker)
+        _install_chain(app)
+        token = await _login(client, keypair=miner)
+        got = await client.get(
+            f"/api/v1/me/agents/{str(agent_id)[:4]}/harness-logs",
+            headers={"authorization": f"Bearer {token}"},
+        )
+        assert got.status_code == 404
 
     async def test_missing_session_is_401(
         self,

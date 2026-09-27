@@ -12,6 +12,7 @@ from fastapi import (
     Depends,
     File,
     HTTPException,
+    Query,
     Request,
     Response,
     UploadFile,
@@ -344,24 +345,31 @@ async def clear_my_avatar(request: Request, session: SessionDep) -> MinerAvatarR
     )
 
 
-@router.get("/agents/{agent_id}/harness-logs", response_model=MinerHarnessLogsResponse)
+@router.get("/agents/{agent_ref}/harness-logs", response_model=MinerHarnessLogsResponse)
 async def my_harness_logs(
-    agent_id: UUID,
+    agent_ref: str,
     request: Request,
     session: SessionDep,
+    bench_version: Annotated[int | None, Query(ge=1)] = None,
+    since_hours: Annotated[int | None, Query(ge=1, le=24 * 30)] = None,
 ) -> MinerHarnessLogsResponse:
     """Return this signed-in miner's harness diagnostics for one of their agents.
 
     Authenticated by the miner session, not a one-shot hotkey signature. The
     caller already proved possession of the hotkey at ``ditto login`` /
-    dashboard sign-in; this only checks that the session's hotkey owns
-    ``agent_id``. Unknown and other-miners' agents are the same 404.
+    dashboard sign-in; this only checks that the session's hotkey owns the
+    agent. ``agent_ref`` is a full UUID or a unique prefix of at least eight
+    characters. Unknown, ambiguous and other-miners' agents are the same 404.
     """
     async with session.begin():
         row, _token = await resolve_miner_session(request, session)
         require_scope(row, "read")
         payload = await load_owned_agent_logs(
-            session, hotkey=row.miner_hotkey, agent_id=agent_id
+            session,
+            hotkey=row.miner_hotkey,
+            agent_ref=agent_ref,
+            bench_version=bench_version,
+            since_hours=since_hours,
         )
     if payload is None:
         raise HTTPException(status_code=404, detail="no such agent for this hotkey")

@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import logging
 from typing import IO, Any
+from urllib.parse import quote
 from uuid import UUID
 
 import httpx
@@ -515,13 +516,21 @@ class ApiClient:
         return MinerAvatarResponse.model_validate(response.json())
 
     def get_harness_logs(
-        self, *, agent_id: UUID, token: str
+        self,
+        *,
+        agent_id: UUID | str,
+        token: str,
+        bench_version: int | None = None,
+        since_hours: int | None = None,
     ) -> MinerHarnessLogsResponse:
         """Fetch this signed-in miner's harness diagnostics for one agent.
 
         Args:
-            agent_id: Agent the current miner session claims to own.
+            agent_id: Agent the current miner session claims to own, as a
+                full UUID or a unique prefix of at least eight characters.
             token: Bearer token from ``ditto login``.
+            bench_version: Only tickets for this benchmark version.
+            since_hours: Only tickets issued within this many hours.
 
         Returns:
             Parsed :class:`MinerHarnessLogsResponse`, tickets newest first.
@@ -532,10 +541,16 @@ class ApiClient:
                 agent are indistinguishable.
             ApiResponseError: On any other non-200.
         """
+        params: dict[str, int] = {}
+        if bench_version is not None:
+            params["bench_version"] = bench_version
+        if since_hours is not None:
+            params["since_hours"] = since_hours
         response = self._request(
             "GET",
-            f"/api/v1/me/agents/{agent_id}/harness-logs",
+            f"/api/v1/me/agents/{quote(str(agent_id), safe='')}/harness-logs",
             headers={"authorization": f"Bearer {token}"},
+            params=params or None,
         )
         if response.status_code == 401:
             raise LoginRequiredError("miner session is invalid or expired")

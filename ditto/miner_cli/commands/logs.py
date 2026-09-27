@@ -20,7 +20,7 @@ Output formats:
 
 Exit codes:
 - 0 success (agent found, attempts printed)
-- 1 generic error (network, malformed UUID, not signed in)
+- 1 generic error (network, malformed agent id, not signed in)
 - 3 not found (404 — unknown agent or not yours)
 """
 
@@ -31,7 +31,6 @@ import json
 import logging
 import re
 import sys
-from uuid import UUID
 
 from ditto.api_models.miner_logs import MinerHarnessLogAttempt
 from ditto.miner_cli.api_client import ApiClient
@@ -78,8 +77,24 @@ def add_subparser(
     )
     parser.add_argument(
         "agent_id",
-        type=UUID,
-        help="UUID of your agent to read diagnostics for.",
+        type=str,
+        help=(
+            "Your agent's UUID, or a unique prefix of at least 8 characters "
+            "(the short id the dashboard shows)."
+        ),
+    )
+    parser.add_argument(
+        "--bench-version",
+        type=int,
+        default=None,
+        help="Only show tickets for this benchmark version.",
+    )
+    parser.add_argument(
+        "--since",
+        type=int,
+        default=None,
+        metavar="HOURS",
+        help="Only show tickets issued in the last HOURS hours.",
     )
     parser.add_argument(
         "--json",
@@ -104,7 +119,10 @@ def run(args: argparse.Namespace) -> int:
     try:
         with ApiClient(base_url=network.api_url) as client:
             response = client.get_harness_logs(
-                agent_id=args.agent_id, token=str(saved["token"])
+                agent_id=args.agent_id,
+                token=str(saved["token"]),
+                bench_version=args.bench_version,
+                since_hours=args.since,
             )
     except LoginRequiredError as e:
         print(f"session expired: {e}", file=sys.stderr)
