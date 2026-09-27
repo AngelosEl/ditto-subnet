@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.319.6 (2026-09-27)
+
+### Bug Fixes
+
+- **screener**: Expose scorer attention locations in canaries
+  ([#2421](https://github.com/ditto-assistant/ditto-subnet/pull/2421),
+  [`aa711a1`](https://github.com/ditto-assistant/ditto-subnet/commit/aa711a1aae1a06b35bf3c3cbdeb89905117fdd5f))
+
+
 ## v0.319.5 (2026-09-27)
 
 ### Bug Fixes
