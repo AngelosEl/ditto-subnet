@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.319.11 (2026-09-27)
+
+### Bug Fixes
+
+- **screener**: Accept retired controller unit flags during rollout
+  ([#2432](https://github.com/ditto-assistant/ditto-subnet/pull/2432),
+  [`0de0dc7`](https://github.com/ditto-assistant/ditto-subnet/commit/0de0dc767744b0023c21e3a617589f824eb9050e))
+
+
 ## v0.319.10 (2026-09-27)
 
 ### Bug Fixes
