@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.319.5 (2026-09-27)
+
+### Bug Fixes
+
+- **screener**: Expose L1 failure audit in report-only canaries
+  ([#2404](https://github.com/ditto-assistant/ditto-subnet/pull/2404),
+  [`3ef92b0`](https://github.com/ditto-assistant/ditto-subnet/commit/3ef92b01a739187fa1b3af8a93c4544313d022c0))
+
+
 ## v0.319.4 (2026-09-27)
 
 ### Bug Fixes
