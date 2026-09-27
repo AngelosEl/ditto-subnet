@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.321.1 (2026-09-27)
+
+### Bug Fixes
+
+- **screener**: Ground provider review in scorer contract
+  ([#2437](https://github.com/ditto-assistant/ditto-subnet/pull/2437),
+  [`209a12d`](https://github.com/ditto-assistant/ditto-subnet/commit/209a12d0e75b20e9c367ef24f79e75a3f72e6189))
+
+
 ## v0.321.0 (2026-09-27)
 
 ### Features
