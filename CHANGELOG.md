@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.319.4 (2026-09-27)
+
+### Bug Fixes
+
+- **screener**: Include L1 evidence in source-only canary reports
+  ([#2402](https://github.com/ditto-assistant/ditto-subnet/pull/2402),
+  [`3accc90`](https://github.com/ditto-assistant/ditto-subnet/commit/3accc908dd17e0194a0f24771abad9f2af783b6e))
+
+
 ## v0.319.3 (2026-09-27)
 
 ### Bug Fixes
