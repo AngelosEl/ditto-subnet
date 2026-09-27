@@ -2,6 +2,21 @@
 
 <!-- version list -->
 
+## v0.319.12 (2026-09-27)
+
+### Bug Fixes
+
+- **screener**: Fail retired one-shot fleet jobs closed
+  ([#2434](https://github.com/ditto-assistant/ditto-subnet/pull/2434),
+  [`57bd44f`](https://github.com/ditto-assistant/ditto-subnet/commit/57bd44f3b0b34d1776b7694b452b26c95629e20b))
+
+### Refactoring
+
+- **screener**: Retire producerless fleet job executor
+  ([#2433](https://github.com/ditto-assistant/ditto-subnet/pull/2433),
+  [`6dd4adb`](https://github.com/ditto-assistant/ditto-subnet/commit/6dd4adb6d03fcf3d6a4c33ad7181cb00ed6b3ddc))
+
+
 ## v0.319.11 (2026-09-27)
 
 ### Bug Fixes
