@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.319.8 (2026-09-27)
+
+### Bug Fixes
+
+- **screener**: Retain distinct L1 concerns at ledger cap
+  ([#2423](https://github.com/ditto-assistant/ditto-subnet/pull/2423),
+  [`2296153`](https://github.com/ditto-assistant/ditto-subnet/commit/2296153fd8ebb044cf3f1a4714c88c042b7d7242))
+
+
 ## v0.319.7 (2026-09-27)
 
 ### Bug Fixes
