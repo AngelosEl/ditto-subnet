@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.319.7 (2026-09-27)
+
+### Bug Fixes
+
+- **screener**: Require offered catalog witness for I7 ID holds
+  ([#2422](https://github.com/ditto-assistant/ditto-subnet/pull/2422),
+  [`2b2d681`](https://github.com/ditto-assistant/ditto-subnet/commit/2b2d68146ba34486ba43229e6c9e98e5a077fbc6))
+
+
 ## v0.319.6 (2026-09-27)
 
 ### Bug Fixes
