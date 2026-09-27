@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.321.5 (2026-09-27)
+
+### Bug Fixes
+
+- **screener**: Require provenance for large starter model
+  ([#2476](https://github.com/ditto-assistant/ditto-subnet/pull/2476),
+  [`944b772`](https://github.com/ditto-assistant/ditto-subnet/commit/944b7722f71ffc79d8a923242997236c5a29fbfe))
+
+
 ## v0.321.4 (2026-09-27)
 
 ### Bug Fixes
