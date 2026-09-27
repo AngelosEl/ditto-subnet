@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.319.9 (2026-09-27)
+
+### Bug Fixes
+
+- **screener**: Give truthful repeated-note feedback
+  ([#2424](https://github.com/ditto-assistant/ditto-subnet/pull/2424),
+  [`6eb6b86`](https://github.com/ditto-assistant/ditto-subnet/commit/6eb6b867fdc72b97fbeeeeee729586cc25fd543d))
+
+
 ## v0.319.8 (2026-09-27)
 
 ### Bug Fixes
