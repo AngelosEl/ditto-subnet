@@ -2,6 +2,21 @@
 
 <!-- version list -->
 
+## v0.321.4 (2026-09-27)
+
+### Bug Fixes
+
+- **screener**: Require observed model usage in control
+  ([#2475](https://github.com/ditto-assistant/ditto-subnet/pull/2475),
+  [`c3940e9`](https://github.com/ditto-assistant/ditto-subnet/commit/c3940e962e5011b761b286f7031decd45fe04491))
+
+### Chores
+
+- **screener**: Add transparent v13 review control
+  ([#2441](https://github.com/ditto-assistant/ditto-subnet/pull/2441),
+  [`cffdf60`](https://github.com/ditto-assistant/ditto-subnet/commit/cffdf60571f8384ed1166219c73a5954c9e304bb))
+
+
 ## v0.321.3 (2026-09-27)
 
 ### Bug Fixes
