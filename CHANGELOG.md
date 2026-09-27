@@ -2,6 +2,17 @@
 
 <!-- version list -->
 
+## v0.321.0 (2026-09-27)
+
+### Features
+
+- **screener**: Make private runtime challenge targeted
+  ([`429f02d`](https://github.com/ditto-assistant/ditto-subnet/commit/429f02da9898160227e83b54c63a93cb3c6f8c28))
+
+- **screener**: Use language-neutral source review tools
+  ([`1fb8f60`](https://github.com/ditto-assistant/ditto-subnet/commit/1fb8f602600529513ae11d35592eb800fff9a245))
+
+
 ## v0.320.0 (2026-09-27)
 
 ### Chores
