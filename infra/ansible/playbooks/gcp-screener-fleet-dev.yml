@@ -1,4 +1,8 @@
 ---
+- ansible.builtin.import_playbook: require-hosts.yml
+  vars:
+    required_group: role_screener_fleet_dev
+
 - name: Rehearse dedicated screener host preparation without production authority
   hosts: role_screener_fleet_dev
   become: true
