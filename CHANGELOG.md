@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.321.10 (2026-09-28)
+
+### Bug Fixes
+
+- **screener**: Classify L2 provider HTTP request failures
+  ([#2505](https://github.com/ditto-assistant/ditto-subnet/pull/2505),
+  [`a01ef6d`](https://github.com/ditto-assistant/ditto-subnet/commit/a01ef6d6635483d2743b173ecd20c611479c212b))
+
+
 ## v0.321.9 (2026-09-28)
 
 ### Bug Fixes
