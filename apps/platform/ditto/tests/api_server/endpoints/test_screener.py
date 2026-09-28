@@ -3698,6 +3698,86 @@ class TestQueue:
         assert response.status_code == 401
         assert response.json()["error_code"] == ERROR_CODE_SCREENER_AUTH
 
+    @pytest.mark.parametrize("enabled", [True, False])
+    async def test_legacy_bearer_switch_gates_the_shared_fleet_token(
+        self,
+        app: FastAPI,
+        client: httpx.AsyncClient,
+        session_maker: async_sessionmaker[AsyncSession],
+        caplog: pytest.LogCaptureFixture,
+        enabled: bool,
+    ) -> None:
+        _install_db(app, session_maker)
+        _install_chain(app)
+        app.state.config = replace(
+            app.state.config,
+            screener_auth=replace(
+                app.state.config.screener_auth, legacy_bearer_enabled=enabled
+            ),
+        )
+        with caplog.at_level(logging.INFO):
+            response = await client.get("/api/v1/screener/queue")
+        if enabled:
+            assert response.status_code == 200, response.text
+            return
+        assert response.status_code == 401
+        assert response.json()["error_code"] == ERROR_CODE_SCREENER_AUTH
+        assert "SCREENER_LEGACY_BEARER_ENABLED=false" in caplog.text
+        assert "test-screener-token" not in caplog.text
+
+    async def test_disabled_legacy_bearer_keeps_node_controller_and_job_tokens(
+        self,
+        app: FastAPI,
+        client: httpx.AsyncClient,
+        session_maker: async_sessionmaker[AsyncSession],
+    ) -> None:
+        node_hotkey = "5LegacyOffNodeHotkeyXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+        node_token = "legacy-off-node-token-at-least-32-characters"
+        await _seed_screener_node(
+            session_maker,
+            node_id="legacy-off-node",
+            hotkey=node_hotkey,
+            token=node_token,
+            screening_concurrency=1,
+        )
+        agent_id = await _seed_agent(session_maker, status=AgentStatus.UPLOADED)
+        await _seed_targon_first(session_maker)
+        _install_db(app, session_maker)
+        _install_chain(app)
+        _install_storage(app)
+        app.state.config = replace(
+            app.state.config,
+            screener_auth=replace(
+                app.state.config.screener_auth,
+                legacy_bearer_enabled=False,
+                controller_api_token=_CONTROLLER_TOKEN,
+            ),
+        )
+        node_headers = {
+            "Authorization": f"Bearer {node_token}",
+            "X-Screener-Hotkey": node_hotkey,
+        }
+        claim = await client.post(_CLAIM_URL, headers=node_headers)
+        assert claim.status_code == 200, claim.text
+        queued = await client.post(
+            f"/api/v1/screener/agent/{agent_id}/submission-image-builds",
+            headers=node_headers,
+            json={"attempt_id": claim.json()["items"][0]["attempt_id"]},
+        )
+        assert queued.status_code == 200, queued.text
+        leased = await client.post(
+            "/api/v1/screener/controller/submission-image-builds/claim",
+            headers={"Authorization": f"Bearer {_CONTROLLER_TOKEN}"},
+            json={"environment": "prod", "controller_epoch": "builder:test"},
+        )
+        assert leased.status_code == 200, leased.text
+        build = leased.json()["build"]
+        source = await client.get(
+            f"/api/v1/screener/submission-image-builds/{build['build_id']}/source",
+            headers={"Authorization": f"Bearer {build['job_token']}"},
+        )
+        assert source.status_code == 200, source.text
+
     async def test_dedicated_screener_needs_no_validator_permit(
         self,
         app: FastAPI,

@@ -89,7 +89,10 @@ class ScreenerAuthConfig:
     """Dedicated screener SS58 hotkey. It does not need an on-chain permit."""
 
     api_token: str | None
-    """Bearer token required on every screener request."""
+    """Legacy fleet-wide bearer token paired with ``hotkey``."""
+
+    legacy_bearer_enabled: bool = True
+    """Accept ``api_token`` for ``hotkey``; per-node tokens are unaffected."""
 
     controller_api_token: str | None = None
     """Least-privilege token allowed to reconcile nodes and capacity only."""
@@ -109,6 +112,10 @@ class ScreenerAuthConfig:
     @property
     def enabled(self) -> bool:
         return self.hotkey is not None and self.api_token is not None
+
+    @property
+    def legacy_bearer_accepted(self) -> bool:
+        return self.legacy_bearer_enabled and self.enabled
 
 
 @dataclass(frozen=True)
@@ -558,6 +565,10 @@ def parse_api_server_config_from_env(commit_hash: str) -> ApiServerConfig:
     )
     screener_hotkey = os.environ.get("SCREENER_HOTKEY") or None
     screener_api_token = os.environ.get("SCREENER_API_TOKEN") or None
+    screener_legacy_bearer_enabled = (
+        os.environ.get("SCREENER_LEGACY_BEARER_ENABLED", "true").strip().lower()
+        in _TRUTHY
+    )
     screener_controller_api_token = (
         os.environ.get("SCREENER_CONTROLLER_API_TOKEN") or None
     )
@@ -859,6 +870,7 @@ def parse_api_server_config_from_env(commit_hash: str) -> ApiServerConfig:
         screener_auth=ScreenerAuthConfig(
             hotkey=screener_hotkey,
             api_token=screener_api_token,
+            legacy_bearer_enabled=screener_legacy_bearer_enabled,
             controller_api_token=screener_controller_api_token,
             bootstrap_ttl_seconds=screener_bootstrap_ttl_seconds,
             node_token_ttl_seconds=screener_node_token_ttl_seconds,
@@ -971,9 +983,14 @@ def check_config(config: ApiServerConfig) -> None:
             f"got {config.log_level!r}"
         )
     auth = config.screener_auth
-    if (auth.hotkey is None) != (auth.api_token is None):
+    # The hotkey alone still attests Platform-finalized screens, so it may stand
+    # without the shared bearer once that bearer is switched off.
+    if (auth.hotkey is None) != (auth.api_token is None) and (
+        auth.hotkey is None or auth.legacy_bearer_enabled
+    ):
         raise ApiServerConfigError(
-            "SCREENER_HOTKEY and SCREENER_API_TOKEN must be set together"
+            "SCREENER_HOTKEY and SCREENER_API_TOKEN must be set together unless "
+            "SCREENER_LEGACY_BEARER_ENABLED=false leaves SCREENER_HOTKEY alone"
         )
     if auth.hotkey is not None and not _SS58_RE.fullmatch(auth.hotkey):
         raise ApiServerConfigError("SCREENER_HOTKEY is not a valid SS58 address")

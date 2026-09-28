@@ -240,6 +240,28 @@ async def test_capacity_view_reports_the_event_retention_window(
     assert capacity.json()["event_retention_days"] == reported
 
 
+@pytest.mark.parametrize("enabled", [True, False])
+async def test_capacity_view_reports_the_legacy_bearer_posture(
+    app: FastAPI,
+    client: httpx.AsyncClient,
+    session_maker: async_sessionmaker[AsyncSession],
+    enabled: bool,
+) -> None:
+    _install(app, session_maker)
+    app.state.config = replace(
+        app.state.config,
+        screener_auth=replace(
+            app.state.config.screener_auth, legacy_bearer_enabled=enabled
+        ),
+    )
+
+    capacity = await client.get("/api/v1/admin/screener-capacity", headers=_HEADERS)
+
+    assert capacity.status_code == 200, capacity.text
+    assert capacity.json()["legacy_bearer_accepted"] is enabled
+    assert "api_token" not in capacity.text
+
+
 async def test_provider_settings_require_gcp_and_exact_confirmation(
     app: FastAPI,
     client: httpx.AsyncClient,

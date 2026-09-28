@@ -1030,6 +1030,9 @@ async def screener_capacity(
         event_retention_days=(
             request.app.state.config.screener_auth.capacity_event_retention_days or None
         ),
+        legacy_bearer_accepted=(
+            request.app.state.config.screener_auth.legacy_bearer_accepted
+        ),
         builds=[_build_view(row) for row in build_rows],
         provider_jobs=sorted(
             [

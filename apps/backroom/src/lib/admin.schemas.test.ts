@@ -309,6 +309,12 @@ describe('admin API schemas', () => {
     expect(screenerCapacityViewSchema.parse(base).event_retention_days).toBeNull()
   })
 
+  it('reports the shared screener bearer posture and null from older Platforms', () => {
+    const base = { snapshot: null, nodes: [], events: [] }
+    expect(screenerCapacityViewSchema.parse({ ...base, legacy_bearer_accepted: false }).legacy_bearer_accepted).toBe(false)
+    expect(screenerCapacityViewSchema.parse(base).legacy_bearer_accepted).toBeNull()
+  })
+
   it('preserves the fenced multi-provider capacity contract', () => {
     const parsed = screenerCapacityViewSchema.parse({
       snapshot: {

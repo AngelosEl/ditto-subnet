@@ -670,6 +670,8 @@ class ScreenerCapacityView(BaseModel):
     events: list[ScreenerCapacityEventView]
     event_retention_days: int | None = None
     """Capacity events older than this are pruned; ``None`` keeps them all."""
+    legacy_bearer_accepted: bool
+    """Whether screener endpoints still accept the fleet-wide shared bearer."""
     builds: list[TrustedImageBuildView] = Field(default_factory=list)
     provider_jobs: list[ScreenerProviderJobView] = Field(default_factory=list)
     provider_control: ScreenerProviderSettingsControl

@@ -533,7 +533,8 @@ async def require_screener(
         raise ScreenerAuthError("missing screener bearer token")
     presented_token = authorization[len(prefix) :]
     if (
-        auth.hotkey is not None
+        auth.legacy_bearer_enabled
+        and auth.hotkey is not None
         and auth.api_token is not None
         and x_screener_hotkey == auth.hotkey
         and secrets.compare_digest(presented_token, auth.api_token)
@@ -547,6 +548,15 @@ async def require_screener(
     node = await session.scalar(
         select(ScreenerNode).where(ScreenerNode.screener_hotkey == x_screener_hotkey)
     )
+    if (
+        node is None
+        and not auth.legacy_bearer_enabled
+        and x_screener_hotkey == auth.hotkey
+    ):
+        raise ScreenerAuthError(
+            "legacy shared screener bearer is disabled "
+            "(SCREENER_LEGACY_BEARER_ENABLED=false); use a per-node credential"
+        )
     if node is None or node.status == "revoked":
         raise ScreenerAuthError("X-Screener-Hotkey is not authorized")
     expected_hash = hashlib.sha256(presented_token.encode()).hexdigest()

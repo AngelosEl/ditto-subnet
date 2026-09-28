@@ -453,6 +453,40 @@ class TestCheckConfig:
         with pytest.raises(ApiServerConfigError, match="must be set together"):
             check_config(config)
 
+    def test_screener_hotkey_may_stand_alone_only_without_legacy_bearer(self) -> None:
+        from ditto.api_server import ScreenerAuthConfig
+
+        hotkey_only = ScreenerAuthConfig(
+            hotkey="5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY",
+            api_token=None,
+            legacy_bearer_enabled=False,
+        )
+        check_config(replace(make_api_server_config(), screener_auth=hotkey_only))
+        assert not hotkey_only.legacy_bearer_accepted
+        token_only = replace(
+            hotkey_only,
+            hotkey=None,
+            api_token="test-screener-token-at-least-32-characters",
+        )
+        with pytest.raises(ApiServerConfigError, match="must be set together"):
+            check_config(replace(make_api_server_config(), screener_auth=token_only))
+
+    def test_legacy_bearer_defaults_on_and_parses_off(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _set_minimum_env(monkeypatch)
+        monkeypatch.delenv("SCREENER_LEGACY_BEARER_ENABLED", raising=False)
+        auth = parse_api_server_config_from_env(commit_hash="abc").screener_auth
+        assert auth.legacy_bearer_enabled
+        assert auth.legacy_bearer_accepted
+
+        monkeypatch.setenv("SCREENER_LEGACY_BEARER_ENABLED", "false")
+        monkeypatch.delenv("SCREENER_API_TOKEN")
+        config = parse_api_server_config_from_env(commit_hash="abc")
+        check_config(config)
+        assert not config.screener_auth.legacy_bearer_enabled
+        assert config.screener_auth.hotkey is not None
+
     def test_screener_auth_rejects_short_token(self):
         from ditto.api_server import ScreenerAuthConfig
 

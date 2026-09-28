@@ -142,6 +142,7 @@ def _config_to_log_dict(config: ApiServerConfig) -> dict[str, object]:
             "enabled": config.screener_auth.enabled,
             "hotkey": config.screener_auth.hotkey or "<unset>",
             "api_token": _redact(config.screener_auth.api_token),
+            "legacy_bearer_accepted": config.screener_auth.legacy_bearer_accepted,
         },
         "pricing": {
             "fee_usd": str(config.pricing.fee_usd),
