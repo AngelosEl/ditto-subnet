@@ -2,6 +2,21 @@
 
 <!-- version list -->
 
+## v0.325.0 (2026-09-28)
+
+### Chores
+
+- **tests**: Remove retired targon fixture from screener auth test
+  ([#2510](https://github.com/ditto-assistant/ditto-subnet/pull/2510),
+  [`ed8d94e`](https://github.com/ditto-assistant/ditto-subnet/commit/ed8d94e6a68870142e1b483498fe502d510d7b72))
+
+### Features
+
+- **platform**: Add legacy screener bearer switch
+  ([#2413](https://github.com/ditto-assistant/ditto-subnet/pull/2413),
+  [`f026b92`](https://github.com/ditto-assistant/ditto-subnet/commit/f026b925e33b6308bd4babe54d6ab74fbd801cc0))
+
+
 ## v0.324.0 (2026-09-28)
 
 ### Features
