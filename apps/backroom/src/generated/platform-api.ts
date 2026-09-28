@@ -29280,6 +29280,11 @@ export interface components {
         ScreenerControllerNodeState: {
             /** Active Lease */
             active_lease: boolean;
+            /**
+             * Admission Open
+             * @default true
+             */
+            admission_open: boolean;
             /** Heartbeat Seen At */
             heartbeat_seen_at?: string | null;
             /** Image Reference */

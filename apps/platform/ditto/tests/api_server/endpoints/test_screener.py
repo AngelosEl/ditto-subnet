@@ -11,6 +11,7 @@ import asyncio
 import hashlib
 import io
 import json
+import logging
 import tarfile
 from collections.abc import AsyncIterator
 from dataclasses import replace
@@ -904,7 +905,7 @@ async def _seed_screener_node(
                 token_hash=hashlib.sha256(token.encode()).hexdigest(),
                 token_expires_at=datetime.now(UTC) + timedelta(hours=1),
                 status="active",
-                capacity=screening_concurrency,
+                capacity=max(1, screening_concurrency),
             )
         )
         session.add(
@@ -1893,6 +1894,95 @@ class TestFederatedScreenerNodes:
         # Enrollment recovery closes once the node has successfully rotated;
         # the consumed bootstrap token cannot recover an older authority.
         assert replay.status_code == 401
+
+    async def test_controller_nodes_reports_admission_closed(
+        self,
+        app: FastAPI,
+        client: httpx.AsyncClient,
+        session_maker: async_sessionmaker[AsyncSession],
+    ) -> None:
+        _install_db(app, session_maker)
+        app.state.config = replace(
+            app.state.config,
+            screener_auth=replace(
+                app.state.config.screener_auth,
+                controller_api_token=_CONTROLLER_TOKEN,
+            ),
+        )
+        now = datetime.now(UTC)
+        for node_id, concurrency in (("closed-node", 0), ("open-node", 2)):
+            hotkey = f"5{node_id}HotkeyXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+            await _seed_screener_node(
+                session_maker,
+                node_id=node_id,
+                hotkey=hotkey,
+                token=f"{node_id}-token-at-least-32-characters",
+                screening_concurrency=concurrency,
+            )
+            async with session_maker() as session, session.begin():
+                session.add(
+                    ScreenerHeartbeat(
+                        screener_hotkey=hotkey,
+                        instance_id=node_id,
+                        software_version="0.21.0",
+                        protocol_version=4,
+                        policy_version=SCREENING_POLICY_VERSION,
+                        state="polling",
+                        first_seen_at=now - timedelta(days=1),
+                        reported_at=now - timedelta(seconds=5),
+                        seen_at=now - timedelta(seconds=5),
+                        signature="ab" * 64,
+                    )
+                )
+
+        response = await client.get(
+            "/api/v1/screener/controller/nodes?environment=prod",
+            headers={"Authorization": f"Bearer {_CONTROLLER_TOKEN}"},
+        )
+
+        assert response.status_code == 200, response.text
+        nodes = {node["node_id"]: node for node in response.json()["nodes"]}
+        assert nodes["closed-node"]["admission_open"] is False
+        assert nodes["closed-node"]["screening_concurrency"] == 0
+        assert nodes["closed-node"]["ready"] is True
+        assert nodes["open-node"]["admission_open"] is True
+        assert nodes["open-node"]["ready"] is True
+
+    async def test_watchdog_leaves_operator_admission_closure_stopped(
+        self,
+        app: FastAPI,
+        client: httpx.AsyncClient,
+        session_maker: async_sessionmaker[AsyncSession],
+    ) -> None:
+        _install_db(app, session_maker)
+        app.state.config = replace(
+            app.state.config,
+            screener_auth=replace(
+                app.state.config.screener_auth,
+                controller_api_token=_CONTROLLER_TOKEN,
+            ),
+        )
+        capacity = await client.put(
+            "/api/v1/screener/controller/capacity",
+            headers={"Authorization": f"Bearer {_CONTROLLER_TOKEN}"},
+            json={
+                **_capacity_payload("prod:first"),
+                "runnable_backlog": 2,
+                "desired_slots": 1,
+                "gce_target": 0,
+                "fallback_reason": "HETZNER_PRIMARY_ADMISSION_CLOSED",
+            },
+        )
+        assert capacity.status_code == 200, capacity.text
+
+        response = await client.get(
+            "/api/v1/public/screener-capacity-watchdog?environment=prod"
+        )
+
+        # Zero admission is a deliberate global stop, not a host failure.
+        assert response.status_code == 200
+        assert response.json()["activate_fallback"] is False
+        assert response.json()["reason"] == "controller_fresh"
 
     async def test_watchdog_is_quiet_while_controller_lease_is_fresh(
         self,
@@ -3223,6 +3313,7 @@ class TestClaim:
 
         assert response.status_code == 200, response.text
         assert response.json()["items"] == []
+        assert response.headers["X-Ditto-Claim-Empty-Reason"] == "claim_lock_busy"
 
     async def test_concurrent_node_claims_obey_node_limit_not_heartbeat_count(
         self,
@@ -3311,6 +3402,95 @@ class TestClaim:
             )
         assert running == 2
 
+    async def test_claim_zero_admission_sets_empty_reason_header(
+        self,
+        app: FastAPI,
+        client: httpx.AsyncClient,
+        session_maker: async_sessionmaker[AsyncSession],
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        node_id = "closed-admission-node"
+        hotkey = "5ClosedAdmissionNodeHotkeyXXXXXXXXXXXXXXXXXXXXXX"
+        token = "closed-admission-node-token-at-least-32-characters"
+        await _seed_screener_node(
+            session_maker,
+            node_id=node_id,
+            hotkey=hotkey,
+            token=token,
+            screening_concurrency=0,
+        )
+        await _seed_agent(session_maker, status=AgentStatus.UPLOADED)
+        _install_db(app, session_maker)
+        monkeypatch.setattr(
+            "ditto.api_server.endpoints.screener._admission_closed_logged_at", {}
+        )
+        headers = {"Authorization": f"Bearer {token}", "X-Screener-Hotkey": hotkey}
+
+        with caplog.at_level(logging.INFO, logger="ditto.api_server.endpoints"):
+            first = await client.post(_CLAIM_URL, headers=headers)
+            second = await client.post(_CLAIM_URL, headers=headers)
+
+        for response in (first, second):
+            assert response.status_code == 200, response.text
+            assert response.json()["items"] == []
+            assert response.headers["X-Ditto-Claim-Empty-Reason"] == (
+                "admission_closed"
+            )
+        closed_logs = [
+            record.getMessage()
+            for record in caplog.records
+            if "admission closed" in record.getMessage()
+        ]
+        assert closed_logs == [
+            f"screener node={node_id} admission closed: "
+            "screening_concurrency=0 active=0"
+        ]
+
+    async def test_claim_full_admission_sets_admission_full(
+        self,
+        app: FastAPI,
+        client: httpx.AsyncClient,
+        session_maker: async_sessionmaker[AsyncSession],
+    ) -> None:
+        node_id = "full-admission-node"
+        hotkey = "5FullAdmissionNodeHotkeyXXXXXXXXXXXXXXXXXXXXXXXX"
+        token = "full-admission-node-token-at-least-32-characters"
+        await _seed_screener_node(
+            session_maker,
+            node_id=node_id,
+            hotkey=hotkey,
+            token=token,
+            screening_concurrency=1,
+        )
+        now = datetime.now(UTC)
+        async with session_maker() as session, session.begin():
+            session.add_all(
+                [
+                    Agent(
+                        agent_id=uuid4(),
+                        miner_hotkey=f"5HK-endpoint-full-admission-{index}",
+                        name=f"endpoint-full-admission-{index}",
+                        sha256=f"{index + 1:02x}" * 32,
+                        status=AgentStatus.UPLOADED,
+                        created_at=now + timedelta(seconds=index),
+                    )
+                    for index in range(2)
+                ]
+            )
+        _install_db(app, session_maker)
+        headers = {"Authorization": f"Bearer {token}", "X-Screener-Hotkey": hotkey}
+
+        admitted = await client.post(_CLAIM_URL, headers=headers)
+        full = await client.post(_CLAIM_URL, headers=headers)
+
+        assert admitted.status_code == 200, admitted.text
+        assert len(admitted.json()["items"]) == 1
+        assert "X-Ditto-Claim-Empty-Reason" not in admitted.headers
+        assert full.status_code == 200, full.text
+        assert full.json()["items"] == []
+        assert full.headers["X-Ditto-Claim-Empty-Reason"] == "admission_full"
+
     async def test_legacy_gcp_claim_waits_for_fenced_overflow_capacity(
         self,
         app: FastAPI,
@@ -3366,6 +3546,7 @@ class TestClaim:
 
         assert held.status_code == 200, held.text
         assert held.json()["items"] == []
+        assert held.headers["X-Ditto-Claim-Empty-Reason"] == "legacy_gcp_held"
         async with session_maker() as session:
             agent = await session.get(Agent, agent_id)
             assert agent is not None
@@ -3391,6 +3572,7 @@ class TestClaim:
 
         assert admitted.status_code == 200, admitted.text
         assert admitted.json()["items"][0]["agent_id"] == str(agent_id)
+        assert "X-Ditto-Claim-Empty-Reason" not in admitted.headers
 
     async def test_legacy_gcp_claim_fails_closed_after_controller_lease_expires(
         self,

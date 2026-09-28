@@ -115,9 +115,37 @@ def gce_overflow_target(
     jobs_per_slot: int,
     global_cap: int,
 ) -> tuple[int, str]:
-    """Choose GCE only for an explicit GCP route, outage, or queue overflow."""
+    """Choose GCE only for an explicit GCP route, outage, or queue overflow.
+
+    Precedence: explicit operator GCP routing wins, and it is the only outage
+    failover for a closed or unknown primary; a stale revision that still names
+    the retired Targon provider does not bypass the stop and falls back to GCE
+    only for a primary known to be open. Then a primary whose admission is
+    known to be closed (``admission_open`` false, or ``screening_concurrency ==
+    0`` from a Platform that predates that field) is an operator closure: a
+    global full stop that GCE never overflows, whatever the backlog,
+    ``gce_overflow_enabled``, or the host's readiness and heartbeat. Only raising
+    the primary's ``screening_concurrency`` to at least one reopens screening. A
+    primary the inventory cannot vouch for -- a failed node read, an omitted
+    primary row, or a row without its admission setting -- also fails closed,
+    since the operator stop cannot be ruled out. Only a primary known to be open
+    but unavailable is a host failure that overflows.
+    """
     if jobs_per_slot < 1 or global_cap < 0:
         raise ValueError("capacity inputs are out of range")
+    if routing.gcp_first:
+        return min(global_cap, demand.desired), "GCP_SCREENERS_PRIORITIZED_BY_POLICY"
+    primary = primary_node or {}
+    primary_ready = primary.get("status") == "active" and primary.get("ready") is True
+    screening_concurrency = int(primary.get("screening_concurrency", 0))
+    admission_open = primary.get("admission_open")
+    if admission_open is None and "screening_concurrency" in primary:
+        # Platform releases before admission_open still report concurrency.
+        admission_open = screening_concurrency > 0
+    if admission_open is False:
+        # A known operator closure holds through any host health change, so a
+        # failed heartbeat cannot reopen screening through GCE.
+        return 0, "HETZNER_PRIMARY_ADMISSION_CLOSED"
     if any(
         priority and priority[0] == "targon"
         for priority in (
@@ -126,25 +154,21 @@ def gce_overflow_target(
             routing.source_review_provider_priority,
         )
     ):
-        return (
-            min(global_cap, demand.desired),
-            "RETIRED_PROVIDER_ROUTING",
-        )
-    if routing.gcp_first:
-        return min(global_cap, demand.desired), "GCP_SCREENERS_PRIORITIZED_BY_POLICY"
+        # A stale revision naming the retired provider still falls back to GCE,
+        # but only behind the same operator stop: never for an unknown primary.
+        if admission_open is None:
+            return 0, "HETZNER_PRIMARY_UNKNOWN"
+        return min(global_cap, demand.desired), "RETIRED_PROVIDER_ROUTING"
     policy = routing.overflow
     if not routing.hetzner_first or not policy.enabled:
         return 0, "GCE_OVERFLOW_DISABLED"
     cap = min(global_cap, policy.max_instances)
     if cap == 0:
         return 0, "GCE_OVERFLOW_CAPPED_AT_ZERO"
-    primary_ready = primary_node is not None and bool(
-        primary_node.get("status") == "active" and primary_node.get("ready") is True
-    )
+    if admission_open is None:
+        return 0, "HETZNER_PRIMARY_UNKNOWN"
     if not primary_ready:
         return min(cap, demand.desired), "HETZNER_PRIMARY_UNAVAILABLE"
-    assert primary_node is not None
-    screening_concurrency = int(primary_node.get("screening_concurrency", 0))
     threshold = max(
         policy.min_backlog,
         screening_concurrency * policy.backlog_multiplier,
@@ -782,6 +806,15 @@ def reconcile(settings: Settings) -> dict[str, Any]:
                 "detail": f"GCE target {current_target} -> {target}",
             }
         )
+    last_reason = _load_state(settings.state_file).get("last_fallback_reason")
+    if isinstance(last_reason, str) and last_reason != reason:
+        events.append(
+            {
+                "event_type": "fallback_reason_changed",
+                "provider": "hetzner",
+                "detail": f"{last_reason} -> {reason}",
+            }
+        )
     prior_provider_ready, prior_error_code, prior_error_at = _provider_state(
         settings.state_file
     )
@@ -810,6 +843,11 @@ def reconcile(settings: Settings) -> dict[str, Any]:
     # Lease acquisition/renewal fences every mutation below.  A concurrent
     # epoch receives 409 while the existing lease remains live.
     platform.renew(snapshot)
+    # The renewed snapshot delivered any reason-change event; record the
+    # reason now so a later failed mutation cannot repeat the transition.
+    state = _load_state(settings.state_file)
+    state["last_fallback_reason"] = reason
+    _write_state(settings.state_file, state)
     watchdog_enabled = target > 0
     if target == current_target:
         try:

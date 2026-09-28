@@ -12,6 +12,10 @@ from fastapi import FastAPI
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from ditto.api_models.screener_node_settings import (
+    ScreenerNodeChannelSettings,
+    node_channel_settings_confirmation,
+)
 from ditto.api_server.dependencies import get_session
 from ditto.db.models import (
     ScreenerCapacityEvent,
@@ -19,6 +23,8 @@ from ditto.db.models import (
     ScreenerHeartbeat,
     ScreenerNode,
     ScreenerNodeBootstrapGrant,
+    ScreenerNodeChannelSettingsRevision,
+    ScreenerProviderSettingsRevision,
     ScreenerReplayProcessKey,
     TrustedImageBuild,
 )
@@ -345,6 +351,111 @@ async def test_node_channel_settings_default_disabled_and_cas_guarded(
     capacity = await client.get("/api/v1/admin/screener-capacity", headers=_HEADERS)
     assert capacity.status_code == 200, capacity.text
     assert capacity.json()["node_controls"][0]["current"]["settings"] == settings
+
+
+_OPEN_NODE_SETTINGS = dict.fromkeys(
+    (
+        "screening_concurrency",
+        "sandbox_slots",
+        "build_concurrency",
+        "runtime_concurrency",
+        "source_review_concurrency",
+    ),
+    4,
+)
+_CLOSE_CONFIRMATION = (
+    "APPLY SCREENER NODE subnet-screener-1 SCREENING=0 SANDBOX=4 BUILD=4 "
+    "RUNTIME=4 SOURCE_REVIEW=4 CLOSE PRODUCTION ADMISSION"
+)
+_CLOSE_ADMISSION = {
+    "environment": "prod",
+    "expected_revision": 1,
+    "settings": {**_OPEN_NODE_SETTINGS, "screening_concurrency": 0},
+    "reason": "Pause production admission on the primary",
+    "actor": "operator@example.com",
+    "confirmation": _CLOSE_CONFIRMATION,
+}
+
+
+async def _seed_open_primary(maker: async_sessionmaker[AsyncSession]) -> None:
+    now = datetime.now(UTC)
+    async with maker() as session, session.begin():
+        session.add(
+            ScreenerNode(
+                environment="prod",
+                node_id="subnet-screener-1",
+                provider="hetzner",
+                provider_resource_id="robot-2984021",
+                screener_hotkey="5DhaT8U7LVwnnJNUU8VL1XEipicatoaDVVq7cHo227gogVZm",
+                token_hash=hashlib.sha256(_NODE_TOKEN.encode()).hexdigest(),
+                token_expires_at=now + timedelta(hours=6),
+                status="active",
+                capacity=4,
+            )
+        )
+        session.add(
+            ScreenerNodeChannelSettingsRevision(
+                environment="prod",
+                node_id="subnet-screener-1",
+                parent_revision=0,
+                settings=_OPEN_NODE_SETTINGS,
+                reason="Open production admission on the primary",
+                actor="test",
+            )
+        )
+        session.add(
+            ScreenerProviderSettingsRevision(
+                environment="prod",
+                parent_revision=0,
+                settings={
+                    "runtime_provider_priority": ["hetzner", "gcp"],
+                    "source_review_provider_priority": ["hetzner", "gcp"],
+                    "build_provider_priority": ["hetzner", "gcp"],
+                    "gce_overflow_enabled": False,
+                    "primary_node_id": "subnet-screener-1",
+                },
+                reason="Route screening to the Hetzner primary",
+                actor="test",
+            )
+        )
+
+
+async def test_closing_last_node_with_backlog_needs_only_explicit_confirmation(
+    app: FastAPI,
+    client: httpx.AsyncClient,
+    session_maker: async_sessionmaker[AsyncSession],
+) -> None:
+    from ditto.api_models.agent_status import AgentStatus
+    from ditto.tests.api_server.endpoints.test_screener import _seed_agent
+
+    open_settings = ScreenerNodeChannelSettings(**_OPEN_NODE_SETTINGS)
+    assert node_channel_settings_confirmation("subnet-screener-1", open_settings) == (
+        "APPLY SCREENER NODE subnet-screener-1 SCREENING=4 SANDBOX=4 BUILD=4 "
+        "RUNTIME=4 SOURCE_REVIEW=4"
+    )
+    _install(app, session_maker)
+    await _seed_open_primary(session_maker)
+    await _seed_agent(session_maker, status=AgentStatus.UPLOADED)
+    path = "/api/v1/admin/screener-nodes/subnet-screener-1/channel-settings"
+
+    unsuffixed = await client.post(
+        path,
+        headers=_HEADERS,
+        json={
+            **_CLOSE_ADMISSION,
+            "confirmation": _CLOSE_CONFIRMATION.removesuffix(
+                " CLOSE PRODUCTION ADMISSION"
+            ),
+        },
+    )
+    assert unsuffixed.status_code == 409
+    assert _CLOSE_CONFIRMATION in unsuffixed.text
+
+    # Closure is a deliberate operator stop, even with waiting agents and
+    # no GCE overflow to pick them up.
+    closed = await client.post(path, headers=_HEADERS, json=_CLOSE_ADMISSION)
+    assert closed.status_code == 200, closed.text
+    assert closed.json()["settings"]["screening_concurrency"] == 0
 
 
 async def test_independent_replay_capacity_is_guarded_and_audited(

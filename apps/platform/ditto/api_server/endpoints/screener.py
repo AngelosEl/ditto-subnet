@@ -37,6 +37,7 @@ import json
 import logging
 import re
 import secrets
+import time
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Annotated, Any, Final, Literal, cast
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
@@ -373,6 +374,13 @@ _LEGACY_INSTANCE_ID = "legacy"
 # so a briefly-offline worker is never pruned out from under the dashboard.
 _HEARTBEAT_RETENTION = timedelta(days=1)
 _CLAIM_FALLBACK_LOCK = asyncio.Lock()
+_ClaimEmptyReason = Literal[
+    "claim_lock_busy", "legacy_gcp_held", "admission_closed", "admission_full"
+]
+_CLAIM_EMPTY_REASON_HEADER = "X-Ditto-Claim-Empty-Reason"
+_ADMISSION_CLOSED_LOG_INTERVAL_SECONDS = 60.0
+# Monotonic time of the last closed-admission log line per enrolled node.
+_admission_closed_logged_at: dict[str, float] = {}
 
 
 def _artifact_key(agent_id: UUID) -> str:
@@ -2133,6 +2141,7 @@ async def list_controller_nodes(
                     "ready": ready,
                     "active_lease": node.screener_hotkey in active_hotkeys,
                     "screening_concurrency": (channel_settings.screening_concurrency),
+                    "admission_open": channel_settings.screening_concurrency > 0,
                     "image_reference": node.image_reference,
                     "heartbeat_seen_at": seen_at,
                 }
@@ -3211,6 +3220,70 @@ async def queue(
     )
 
 
+def _empty_claim(
+    response: Response, *, reason: _ClaimEmptyReason, required_policy: int
+) -> ScreenerQueueResponse:
+    """Return no work and name why, so an idle claim is never silent."""
+    response.headers[_CLAIM_EMPTY_REASON_HEADER] = reason
+    return ScreenerQueueResponse(
+        items=[],
+        count=0,
+        required_policy_version=required_policy,
+    )
+
+
+async def _claim_admission(
+    session: AsyncSession,
+    *,
+    node_id: str | None,
+    screener_hotkey: str,
+    now: datetime,
+    limit: int,
+) -> tuple[int, _ClaimEmptyReason | None]:
+    """Bound a claim by its admission route and name any empty result."""
+    if node_id is None:
+        if await _legacy_gcp_claim_is_authorized(session, now=now):
+            return limit, None
+        logger.info(
+            "legacy GCP screener=%s held behind primary capacity route",
+            screener_hotkey,
+        )
+        return 0, "legacy_gcp_held"
+    node = await session.get(ScreenerNode, node_id)
+    if node is None:
+        raise ScreenerAuthError("screener node is not authorized")
+    _, limits = await resolve_screener_node_channel_settings(session, node_id=node_id)
+    active = int(
+        await session.scalar(
+            select(func.count())
+            .select_from(ScreeningAttempt)
+            .where(
+                ScreeningAttempt.screener_hotkey == screener_hotkey,
+                ScreeningAttempt.status == "running",
+                ScreeningAttempt.deadline > now,
+            )
+        )
+        or 0
+    )
+    if limits.screening_concurrency == 0:
+        logged_at = _admission_closed_logged_at.get(node_id)
+        monotonic_now = time.monotonic()
+        if (
+            logged_at is None
+            or monotonic_now - logged_at >= _ADMISSION_CLOSED_LOG_INTERVAL_SECONDS
+        ):
+            _admission_closed_logged_at[node_id] = monotonic_now
+            logger.info(
+                "screener node=%s admission closed: screening_concurrency=0 active=%d",
+                node_id,
+                active,
+            )
+        return 0, "admission_closed"
+    if active >= limits.screening_concurrency:
+        return 0, "admission_full"
+    return min(limit, limits.screening_concurrency - active), None
+
+
 @router.post(
     "/claim",
     response_model=ScreenerQueueResponse,
@@ -3304,49 +3377,23 @@ async def claim(
     if session.get_bind().dialect.name == "postgresql":
         async with session.begin():
             if not await try_acquire_screening_claim_lock(session):
-                return ScreenerQueueResponse(
-                    items=[],
-                    count=0,
-                    required_policy_version=required_policy,
+                return _empty_claim(
+                    response,
+                    reason="claim_lock_busy",
+                    required_policy=required_policy,
                 )
             node_id = getattr(request.state, "screener_node_id", None)
-            if node_id is None:
-                if not await _legacy_gcp_claim_is_authorized(session, now=now):
-                    logger.info(
-                        "legacy GCP screener=%s held behind primary capacity route",
-                        screener_hotkey,
-                    )
-                    return ScreenerQueueResponse(
-                        items=[],
-                        count=0,
-                        required_policy_version=required_policy,
-                    )
-            else:
-                node = await session.get(ScreenerNode, node_id)
-                if node is None:
-                    raise ScreenerAuthError("screener node is not authorized")
-                _, limits = await resolve_screener_node_channel_settings(
-                    session, node_id=node_id
+            limit, empty_reason = await _claim_admission(
+                session,
+                node_id=node_id,
+                screener_hotkey=screener_hotkey,
+                now=now,
+                limit=limit,
+            )
+            if empty_reason is not None:
+                return _empty_claim(
+                    response, reason=empty_reason, required_policy=required_policy
                 )
-                active = int(
-                    await session.scalar(
-                        select(func.count())
-                        .select_from(ScreeningAttempt)
-                        .where(
-                            ScreeningAttempt.screener_hotkey == screener_hotkey,
-                            ScreeningAttempt.status == "running",
-                            ScreeningAttempt.deadline > now,
-                        )
-                    )
-                    or 0
-                )
-                limit = min(limit, max(0, limits.screening_concurrency - active))
-                if limit == 0:
-                    return ScreenerQueueResponse(
-                        items=[],
-                        count=0,
-                        required_policy_version=required_policy,
-                    )
             queue_settings = await resolve_queue_policy_settings(session)
             binding = await resolve_claim_binding()
             claimed = await claim_screening_attempts(
@@ -3371,43 +3418,17 @@ async def claim(
         # Postgres transaction-scoped lock used in production.
         async with _CLAIM_FALLBACK_LOCK, session.begin():
             node_id = getattr(request.state, "screener_node_id", None)
-            if node_id is None:
-                if not await _legacy_gcp_claim_is_authorized(session, now=now):
-                    logger.info(
-                        "legacy GCP screener=%s held behind primary capacity route",
-                        screener_hotkey,
-                    )
-                    return ScreenerQueueResponse(
-                        items=[],
-                        count=0,
-                        required_policy_version=required_policy,
-                    )
-            else:
-                node = await session.get(ScreenerNode, node_id)
-                if node is None:
-                    raise ScreenerAuthError("screener node is not authorized")
-                _, limits = await resolve_screener_node_channel_settings(
-                    session, node_id=node_id
+            limit, empty_reason = await _claim_admission(
+                session,
+                node_id=node_id,
+                screener_hotkey=screener_hotkey,
+                now=now,
+                limit=limit,
+            )
+            if empty_reason is not None:
+                return _empty_claim(
+                    response, reason=empty_reason, required_policy=required_policy
                 )
-                active = int(
-                    await session.scalar(
-                        select(func.count())
-                        .select_from(ScreeningAttempt)
-                        .where(
-                            ScreeningAttempt.screener_hotkey == screener_hotkey,
-                            ScreeningAttempt.status == "running",
-                            ScreeningAttempt.deadline > now,
-                        )
-                    )
-                    or 0
-                )
-                limit = min(limit, max(0, limits.screening_concurrency - active))
-                if limit == 0:
-                    return ScreenerQueueResponse(
-                        items=[],
-                        count=0,
-                        required_policy_version=required_policy,
-                    )
             queue_settings = await resolve_queue_policy_settings(session)
             binding = await resolve_claim_binding()
             claimed = await claim_screening_attempts(

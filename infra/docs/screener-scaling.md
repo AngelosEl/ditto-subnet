@@ -22,6 +22,22 @@ controller:
    capacity when the primary is not ready;
 6. scales GCE down only after GCE-owned leases finish.
 
+`SCREENING=0` (`screening_concurrency=0`) on the primary is an operator closure,
+not an outage: it is a global full stop recorded as
+`HETZNER_PRIMARY_ADMISSION_CLOSED`, and GCE does not overflow it regardless of
+backlog, `gce_overflow_enabled`, or the host's readiness and heartbeat, so a
+host health failure cannot reopen screening. Reopening needs a deliberate
+`screening_concurrency >= 1` activation on the primary. Explicit GCP-first
+provider routing is a separate operator decision, takes precedence, and is the
+only outage failover for a closed primary. A primary the controller cannot vouch
+for -- a failed node-inventory read, an omitted primary row, or a row without
+its admission setting -- also fails closed (`HETZNER_PRIMARY_UNKNOWN`), so an
+inventory outage cannot bypass an operator stop. Only a primary known to be
+open but unready is a host failure that overflows to GCE. A stale routing
+revision that still names the retired Targon provider first honors the same
+closed and unknown stops; its GCE fallback (`RETIRED_PROVIDER_ROUTING`) applies
+only to a primary known to be open.
+
 Production uses `['hetzner', 'gcp']` for build, runtime smoke, and source review.
 The second entry means that separate GCE workers may claim still-unclaimed
 submissions when the capacity policy activates them. It does not mean a failed
