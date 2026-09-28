@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.325.2 (2026-09-28)
+
+### Bug Fixes
+
+- **screener**: Hold and manually release verified v13 court clears
+  ([#2484](https://github.com/ditto-assistant/ditto-subnet/pull/2484),
+  [`5dbb7be`](https://github.com/ditto-assistant/ditto-subnet/commit/5dbb7be91256ab762f0923d04a3159a8e71168a7))
+
+
 ## v0.325.1 (2026-09-28)
 
 ### Bug Fixes
