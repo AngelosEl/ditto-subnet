@@ -2401,6 +2401,33 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/admin/screening-quarantines/{quarantine_id}/release-verified-v13-clear": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Release Verified V13 Court Clear
+         * @description Release one held v13 court clear after re-verifying its signed receipt.
+         *
+         *     A narrow path beside ``resolve_quarantine`` for the
+         *     ``source-review-awaiting-v13-verification`` hold only; it never releases
+         *     automatically. The court evidence is verified before dataset generation and
+         *     again under the row locks. The submission then moves to ``evaluating``
+         *     exactly like an ordinary release, where a missing screened image is rebuilt
+         *     by the fail-closed build-only claim before validators can score it.
+         */
+        post: operations["release_verified_v13_court_clear_api_v1_admin_screening_quarantines__quarantine_id__release_verified_v13_clear_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/admin/screening-quarantines/{quarantine_id}/resolve": {
         parameters: {
             query?: never;
@@ -13457,6 +13484,34 @@ export interface components {
             effective: components["schemas"]["EffectiveValidatorSlotSettings"];
             /** History */
             history: components["schemas"]["ValidatorSlotSettingsRevision"][];
+        };
+        /**
+         * AdminVerifiedV13ClearReleaseRequest
+         * @description Compare-and-swap guards for releasing one held, verified v13 court clear.
+         */
+        AdminVerifiedV13ClearReleaseRequest: {
+            /**
+             * Confirmation
+             * @constant
+             */
+            confirmation: "RELEASE VERIFIED V13 COURT CLEAR";
+            /** Expected Sha256 */
+            expected_sha256: string;
+            /** Reason */
+            reason: string;
+        };
+        /** AdminVerifiedV13ClearReleaseResponse */
+        AdminVerifiedV13ClearReleaseResponse: {
+            /** Adjudication Digest */
+            adjudication_digest: string;
+            /** Agent Status */
+            agent_status: string;
+            /**
+             * Idempotent
+             * @default false
+             */
+            idempotent: boolean;
+            quarantine: components["schemas"]["AdminQuarantineItem"];
         };
         /**
          * AdvanceScoredPolicyRescreenRequest
@@ -39685,6 +39740,44 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AdminQuarantineContext"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    release_verified_v13_court_clear_api_v1_admin_screening_quarantines__quarantine_id__release_verified_v13_clear_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "x-admin-actor"?: string | null;
+                authorization?: string | null;
+            };
+            path: {
+                quarantine_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminVerifiedV13ClearReleaseRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminVerifiedV13ClearReleaseResponse"];
                 };
             };
             /** @description Validation Error */

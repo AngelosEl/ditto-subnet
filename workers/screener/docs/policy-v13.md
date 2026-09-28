@@ -11,6 +11,9 @@ mechanical build, image, and health gates. A private behavioral challenge is
 not a universal admission requirement. A completed, certified low-risk source
 review can clear without one; a supported source violation remains held for
 evidence-bound rejection review. Missing source evidence is never a clear.
+Until Platform verifies source-only clear receipts, a v13 court clear is
+transported and held as `QUARANTINE` with
+`source-review-awaiting-v13-verification`.
 
 Operators may still request a bounded private behavioral audit for a specific
 unresolved runtime question. Such an audit has its own explicit manifest and

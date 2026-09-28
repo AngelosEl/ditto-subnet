@@ -51,6 +51,9 @@ by the saved scheduled-task prompt per the backroom-review skill.
 5. Resolve per item with `resolve_screening_quarantine` /
    `resolve_ath_review`: the reason names the policy category, the minimal
    file:line set actually read, and the cited precedent. No challenge values.
+   A v13 court clear held with `source-review-awaiting-v13-verification`
+   releases through `release_verified_v13_court_clear`, which re-verifies its
+   signed receipt; a 409 leaves it for the ordinary review above.
 6. Re-read each resolved row to verify the write landed. Refresh the leaderboard
    after ATH rulings and report predecessor re-entry without widening the batch.
    A timeout is

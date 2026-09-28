@@ -1162,7 +1162,7 @@ def test_preexecution_review_failure_never_releases_or_rejects(
     ("policy_version", "court_decision", "outcome"),
     [
         (12, "clear", ScreeningOutcome.PASS),
-        (13, "clear", ScreeningOutcome.PASS),
+        (13, "clear", ScreeningOutcome.QUARANTINE),
         (13, "reject", ScreeningOutcome.QUARANTINE),
         (13, "escalate", ScreeningOutcome.QUARANTINE),
     ],
@@ -1194,10 +1194,10 @@ def test_final_adjudication_settles_preexecution_source_lead(
     assert decision.outcome == outcome
     assert decision.adjudication == adjudication
     assert decision.evidence[0].code == "source-review-adjudicated"
-    assert not any(
+    assert any(
         item.code == "source-review-awaiting-v13-verification"
         for item in decision.evidence
-    )
+    ) == (policy_version == 13 and court_decision == "clear")
 
 
 async def test_source_review_finding_travels_to_quarantine_decision() -> None:
@@ -1232,7 +1232,7 @@ async def test_source_review_finding_travels_to_quarantine_decision() -> None:
     ("policy_version", "court_decision", "outcome"),
     [
         (12, "clear", ScreeningOutcome.PASS),
-        (13, "clear", ScreeningOutcome.PASS),
+        (13, "clear", ScreeningOutcome.QUARANTINE),
         (13, "reject", ScreeningOutcome.QUARANTINE),
         (13, "escalate", ScreeningOutcome.QUARANTINE),
     ],
@@ -1276,14 +1276,52 @@ async def test_final_adjudication_crosses_the_local_policy_boundary(
 
     assert decision.outcome == outcome
     assert decision.adjudication == adjudication
-    assert not any(
+    assert any(
         item.code == "source-review-awaiting-v13-verification"
         for item in decision.evidence
+    ) == (policy_version == 13 and court_decision == "clear")
+
+
+async def test_v13_court_clear_is_quarantine_transport_on_both_paths() -> None:
+    """Platform refuses a v13 PASS carrying a court clear; hold it instead."""
+    adjudication = {
+        "decision": "clear",
+        "reason": "final source-review court decision",
+        "model": "z-ai/glm-5.3-flash",
+        "prompt_revision": "adjudicator-v3-policy-v13",
+        "notes_considered": 1,
+    }
+    observation = SourceReviewObservation(
+        ok=False,
+        risk_level=None,
+        finding_digest=None,
+        categories=(),
+        error_code="l3-adjudicator-incomplete",
+        failure_disposition="retryable_infra",
+        adjudication=adjudication,
     )
+
+    async def challenge(*_):  # type: ignore[no-untyped-def]
+        raise AssertionError("no behavioral pack is configured")
+
+    async def review() -> SourceReviewObservation:
+        return observation
+
+    post_build = await load_policy_engine(None).evaluate(
+        _context(challenge, review, policy_version=13)
+    )
+    preflight = PolicyEngine(CORE_ONLY_MANIFEST).preexecution_source_decision(
+        observation, policy_version=13
+    )
+
+    for decision in (post_build, preflight):
+        assert decision.outcome == ScreeningOutcome.QUARANTINE
+        assert decision.adjudication == adjudication
+        assert decision.evidence[-1].code == "source-review-awaiting-v13-verification"
 
 
 async def test_v13_source_clear_does_not_require_universal_oracle() -> None:
-    """An L4 source clear settles the built-in admission profile."""
+    """An L4 source clear settles the built-in profile as a held quarantine."""
 
     async def challenge(challenge_id, _request, _timeout):  # type: ignore[no-untyped-def]
         return ChallengeObservation(
@@ -1315,16 +1353,19 @@ async def test_v13_source_clear_does_not_require_universal_oracle() -> None:
 
     decision = await load_policy_engine(None).evaluate(_context(challenge, review))
 
-    assert decision.outcome == ScreeningOutcome.PASS
+    assert decision.outcome == ScreeningOutcome.QUARANTINE
     assert decision.adjudication == adjudication
-    assert [item.code for item in decision.evidence] == ["source-review-adjudicated"]
+    assert [item.code for item in decision.evidence] == [
+        "source-review-adjudicated",
+        "source-review-awaiting-v13-verification",
+    ]
 
 
 @pytest.mark.parametrize(
     ("policy_version", "expected"),
     [
         (12, ScreeningOutcome.PASS),
-        (13, ScreeningOutcome.PASS),
+        (13, ScreeningOutcome.QUARANTINE),
     ],
 )
 async def test_oracle_transport_failure_is_fail_closed_for_v13(
@@ -1369,7 +1410,14 @@ async def test_oracle_transport_failure_is_fail_closed_for_v13(
     assert decision.outcome == expected
     assert decision.policy_version == policy_version
     assert decision.adjudication == adjudication
-    assert [item.code for item in decision.evidence] == ["source-review-adjudicated"]
+    assert [item.code for item in decision.evidence] == (
+        ["source-review-adjudicated"]
+        if policy_version == 12
+        else [
+            "source-review-adjudicated",
+            "source-review-awaiting-v13-verification",
+        ]
+    )
 
 
 async def test_clean_review_finding_is_kept_when_oracle_is_inconclusive() -> None:

@@ -34,6 +34,10 @@ on:
       - scripts/generate_confirmation_installation.py
       # test_inference.py asserts the request-field fates against this table.
       - docs/inference-request-fields.json
+      # The screener worker produces the signed verdicts Platform's submit
+      # endpoint consumes; a producer-only change must run the consumer tests.
+      - workers/screener/ditto_screener/policy.py
+      - workers/screener/ditto_screener/worker.py
       - .github/workflows/platform-ci.yml
       - .github/workflows/platform-verify.yml
 permissions:

@@ -138,6 +138,7 @@ import {
   retryFailedScreeningNowInputSchema,
   expireRunningScreeningInputSchema,
   rejectScreeningSubmissionInputSchema,
+  releaseVerifiedV13CourtClearInputSchema,
   summarizeScreeningFailuresInputSchema,
   confirmationBundleStateSchema,
   confirmationBundleDetailInputSchema,
@@ -195,6 +196,7 @@ import {
   previewAthRulingsBatch,
   executeAthRulingsBatch,
   resolveScreeningQuarantine,
+  releaseVerifiedV13CourtClear,
   resolveScreeningDispute,
   rescreenRejectedSubmission,
   retryFailedScreeningNow,
@@ -390,6 +392,7 @@ export const WRITE_TOOL_NAMES = new Set([
   'reconcile_coding_shadow_artifact',
   'issue_coding_shadow_ticket_set',
   'resolve_screening_quarantine',
+  'release_verified_v13_court_clear',
   'resolve_screening_dispute',
   'rescreen_rejected_submission',
   'retry_failed_screening_now',
@@ -791,6 +794,8 @@ const MCP_CATALOG_DESCRIPTIONS: Record<string, string> = {
     'Read exact V13 artifact deadline binding; null/not_configured means no authoritative window. Attempt leases are not finalizer dates.',
   reject_screening_submission:
     'Reject a screening row. Confirmation: REJECT SCREENING SUBMISSION. Requires backroom:write.',
+  release_verified_v13_court_clear:
+    'Release a held V13 court clear after Platform re-verifies its signed receipt. Confirmation: RELEASE VERIFIED V13 COURT CLEAR. Requires backroom:write.',
   get_queue_policy_settings:
     'Read effective queue policy, rollout-locked fields, defaults, and optionally paged newest-first revision history. Open-rollout targets are snapshots: settings do not resize an in-flight rollout. historyLimit defaults to 0.',
   get_screener_policy_activation:
@@ -3558,6 +3563,19 @@ export function createBackroomMcpServer(props: McpGrantProps) {
     },
     async (input) =>
       write(() => resolveScreeningQuarantine(input, props.session.email)),
+  )
+
+  registerTool(
+    'release_verified_v13_court_clear',
+    {
+      title: 'Release verified V13 court clear',
+      description:
+        'Release one quarantine held with source-review-awaiting-v13-verification (screening_reason_code adjudicated-source-review-clear) to evaluating. Platform first re-verifies the retained court evidence: policy v13, the exact attempt and artifact SHA-256, an enforced adjudicator posture on the claim, a clear adjudication matching its signed digest, and the screener completion-receipt signature. Any gap answers 409 with the precise reason and the hold stays for resolve_screening_quarantine. Supply the current artifact SHA-256, an audit reason, and confirmation "RELEASE VERIFIED V13 COURT CLEAR". Replaying the same actor and reason is idempotent. A missing screened image is rebuilt by a build-only screening claim before validators score. Requires backroom:write.',
+      inputSchema: releaseVerifiedV13CourtClearInputSchema,
+      annotations: toolAnnotations('write', true),
+    },
+    async (input) =>
+      write(() => releaseVerifiedV13CourtClear(input, props.session.email)),
   )
 
   registerTool(

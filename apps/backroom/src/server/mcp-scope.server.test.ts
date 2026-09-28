@@ -188,6 +188,31 @@ describe('MCP scope challenges', () => {
     ])
   })
 
+  it('recognizes verified v13 court-clear releases as write-scoped', async () => {
+    const request = new Request('https://backroom.dittobench.ai/mcp', {
+      method: 'POST',
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: {
+          name: 'release_verified_v13_court_clear',
+          arguments: {
+            quarantineId: 'e3bb1518-530f-42d7-a50b-b21ac9853798',
+            reason: 'Court clear receipt re-verified; admit for scoring',
+            expectedSha256: 'ab'.repeat(32),
+            confirmation: 'RELEASE VERIFIED V13 COURT CLEAR',
+          },
+        },
+      }),
+    })
+
+    expect(await callsWriteTool(request)).toBe(true)
+    expect(await requiredScopesForRequest(request)).toEqual([
+      BACKROOM_WRITE_SCOPE,
+    ])
+  })
+
   it('recognizes scored rollout qualification as write-scoped', async () => {
     const request = new Request('https://backroom.dittobench.ai/mcp', {
       method: 'POST',

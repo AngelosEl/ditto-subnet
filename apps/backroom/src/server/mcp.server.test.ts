@@ -299,6 +299,7 @@ describe('Backroom MCP tools', () => {
         'issue_benchmark_canary',
         'cancel_benchmark_canary',
         'resolve_screening_quarantine',
+        'release_verified_v13_court_clear',
         'resolve_screening_dispute',
         'resolve_ath_review',
         'create_ath_rulings_upload',
@@ -414,9 +415,9 @@ describe('Backroom MCP tools', () => {
     // The two terminal-review eligibility reads (#2041) add a settings-history
     // input and one uuid input; measured 174,477 bytes together.
     // Naming the fleet-effective posture in its catalog line measures 174,513.
-    // Main also adds the no-input validator-capacity read (#2036); retain
-    // about 0.5 KB of headroom for their combined catalog.
-    expect(JSON.stringify(response.tools).length).toBeLessThanOrEqual(175_700)
+    // Main also adds the no-input validator-capacity read (#2036), and the
+    // guarded verified V13 court-clear release adds a bounded writer entry.
+    expect(JSON.stringify(response.tools).length).toBeLessThanOrEqual(176_300)
     const descriptions = response.tools.map((tool) => tool.description ?? '')
     // Includes concise rollout and protected-policy controls; tutorials live
     // in get_backroom_tool_help, not here. The budget admits the screener
@@ -449,7 +450,8 @@ describe('Backroom MCP tools', () => {
       // claim-provenance read summary to 30,878. The two one-line
       // terminal-review eligibility reads (#2041) measure 31,038.
       // Naming the fleet-effective posture (protocol 28) measures 31,074;
-      // main also adds the validator-capacity summary (#2036).
+      // main adds the validator-capacity summary (#2036) and the guarded
+      // verified V13 court-clear release summary.
       31_500,
     )
     expect(Math.max(...descriptions.map((value) => value.length))).toBeLessThanOrEqual(600)
@@ -7075,6 +7077,94 @@ describe('Backroom MCP tools', () => {
           expected_score_count: 0,
           expected_attempt_id: attemptId,
           confirmation: 'REJECT SCREENING SUBMISSION',
+        }),
+      }),
+    )
+
+    await client.close()
+    await server.close()
+  })
+
+  it('releases a verified v13 court clear only with write scope and confirmation', async () => {
+    process.env.DITTO_ADMIN_API_TOKEN = 'platform-admin-token'
+    const quarantineId = 'e3bb1518-530f-42d7-a50b-b21ac9853798'
+    const expectedSha256 = 'ab'.repeat(32)
+    const reason = 'Court clear receipt re-verified; admit for scoring'
+    const quarantine = {
+      quarantine_id: quarantineId,
+      agent_id: '90cb5697-cbc1-40f4-a27e-439a7986a054',
+      attempt_id: '20236f60-c143-43b0-b03e-2cbe51f281d8',
+      miner_hotkey: '5Miner',
+      agent_name: 'memory-agent',
+      artifact_sha256: expectedSha256,
+      policy_version: 13,
+      manifest_digest: '12'.repeat(32),
+      finding_digest: null,
+      screening_reason_code: 'adjudicated-source-review-clear',
+      status: 'resolved',
+      created_at: '2026-09-28T12:00:00Z',
+      resolved_at: '2026-09-28T12:30:00Z',
+      resolved_by: 'peyton@omniaura.ai',
+      resolution: 'release',
+      resolution_reason: reason,
+    }
+    const fetchMock = vi.fn().mockResolvedValue(
+      Response.json({
+        quarantine,
+        agent_status: 'evaluating',
+        adjudication_digest: 'cd'.repeat(32),
+        idempotent: false,
+      }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+    const readOnly = await connect([BACKROOM_READ_SCOPE])
+    const refused = await readOnly.client.callTool({
+      name: 'release_verified_v13_court_clear',
+      arguments: {
+        quarantineId,
+        reason,
+        expectedSha256,
+        confirmation: 'RELEASE VERIFIED V13 COURT CLEAR',
+      },
+    })
+    await readOnly.client.close()
+    await readOnly.server.close()
+    const { client, server } = await connect([BACKROOM_READ_SCOPE, BACKROOM_WRITE_SCOPE])
+    const unconfirmed = await client.callTool({
+      name: 'release_verified_v13_court_clear',
+      arguments: { quarantineId, reason, expectedSha256, confirmation: 'RELEASE' },
+    })
+    const response = await client.callTool({
+      name: 'release_verified_v13_court_clear',
+      arguments: {
+        quarantineId,
+        reason,
+        expectedSha256,
+        confirmation: 'RELEASE VERIFIED V13 COURT CLEAR',
+      },
+    })
+
+    expect(refused.isError).toBe(true)
+    expect(unconfirmed.isError).toBe(true)
+    expect(response.isError).not.toBe(true)
+    expect(readJsonResult(response)).toMatchObject({
+      agent_status: 'evaluating',
+      adjudication_digest: 'cd'.repeat(32),
+      idempotent: false,
+    })
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(fetchMock).toHaveBeenCalledWith(
+      `https://platform-api.heyditto.ai/api/v1/admin/screening-quarantines/${quarantineId}/release-verified-v13-clear`,
+      expect.objectContaining({
+        method: 'POST',
+        headers: expect.objectContaining({
+          Authorization: 'Bearer platform-admin-token',
+          'X-Admin-Actor': 'peyton@omniaura.ai',
+        }),
+        body: JSON.stringify({
+          reason,
+          expected_sha256: expectedSha256,
+          confirmation: 'RELEASE VERIFIED V13 COURT CLEAR',
         }),
       }),
     )

@@ -25,6 +25,8 @@ from ditto_screener.heartbeat import (
 )
 from ditto_screener.l2_review import L2RunResult, L2Usage
 from ditto_screener.policy import (
+    CORE_ONLY_MANIFEST,
+    PolicyEngine,
     PolicyEvidence,
     ScreeningDecision,
     ScreeningOutcome,
@@ -35,6 +37,7 @@ from ditto_screener.worker import ScreenerWorker
 from ditto_screening_protocol import (
     SCREENING_FLOOR_POLICY_VERSION,
     SCREENING_POLICY_VERSION,
+    AdjudicationCompletionReceipt,
     AgentStatus,
     ArtifactResponse,
     ScreenerQueueItem,
@@ -43,6 +46,8 @@ from ditto_screening_protocol import (
     ScreenResultOutcome,
     ScreenResultRequest,
     ScreenReviewAudit,
+    SourceReviewAdjudication,
+    SourceReviewCitation,
     SourceReviewFinding,
     SourceReviewNote,
     source_review_notes_digest,
@@ -1190,6 +1195,56 @@ async def test_shadow_seed_observation_keeps_quarantine_verdict_signed(
         "seed-readonly-write",
         "seed-envelope-usage",
     ]
+
+
+async def test_v13_court_clear_is_signed_as_protocol_valid_quarantine(
+    make_config: Callable[..., ScreenerConfig],
+) -> None:
+    # Platform refuses a v13 court clear carried by PASS. The worker must sign
+    # the held quarantine shape that the shared protocol and Platform accept.
+    adjudication = SourceReviewAdjudication(
+        decision="clear",
+        reason="The served model authors the graded response",
+        clear_clause="model_authors_graded_slot",
+        citations=[SourceReviewCitation(path="src/main.rs", line=6)],
+        model="z-ai/glm-5.3-flash",
+        prompt_revision="adjudicator-v7-policy-v13",
+        completion_receipt=AdjudicationCompletionReceipt(
+            elapsed_ms=4300,
+            observed_model="z-ai/glm-5.3-flash",
+            request_count=1,
+        ),
+    ).model_dump(mode="json")
+    decision = PolicyEngine(CORE_ONLY_MANIFEST).preexecution_source_decision(
+        SourceReviewObservation(
+            ok=False,
+            risk_level=None,
+            finding_digest=None,
+            categories=(),
+            error_code="l3-adjudicator-incomplete",
+            failure_disposition="retryable_infra",
+            adjudication=adjudication,
+        ),
+        policy_version=13,
+    )
+    platform = _FakePlatform([])
+    worker = _worker(make_config(), platform, _FakeGate(decision))
+
+    await worker._screen_one(
+        _item(uuid4(), policy_version=13),
+        policy_version=13,
+        normal_review_settings=platform.review_settings.model_copy(
+            update={"revision": 7, "scope": "*"}
+        ),
+    )
+
+    request = _signed_request(platform.verdicts[0])
+    assert request.outcome == ScreenResultOutcome.QUARANTINE
+    assert request.passed is False
+    assert request.reason_code == "source-review-awaiting-v13-verification"
+    assert request.adjudication is not None
+    assert request.adjudication.decision == "clear"
+    assert request.completion_receipt_signature is not None
 
 
 async def test_shadow_seed_observation_keeps_pass_verdict_signed(

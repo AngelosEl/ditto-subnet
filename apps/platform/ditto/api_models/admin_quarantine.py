@@ -272,6 +272,24 @@ class AdminQuarantineResolveResponse(BaseModel):
     agent_status: str
 
 
+class AdminVerifiedV13ClearReleaseRequest(BaseModel):
+    """Compare-and-swap guards for releasing one held, verified v13 court clear."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    reason: Annotated[str, StringConstraints(strip_whitespace=True, min_length=8)]
+    expected_sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
+    confirmation: Literal["RELEASE VERIFIED V13 COURT CLEAR"]
+
+
+class AdminVerifiedV13ClearReleaseResponse(BaseModel):
+    quarantine: AdminQuarantineItem
+    agent_status: str
+    adjudication_digest: str
+    """The signed court adjudication the release was re-verified against."""
+    idempotent: bool = False
+
+
 class AdminScreeningDisputeItem(BaseModel):
     dispute_id: UUID
     agent_id: UUID
@@ -1300,6 +1318,8 @@ __all__ = [
     "AdminQuarantineResolutionEvent",
     "AdminQuarantineResolveRequest",
     "AdminQuarantineResolveResponse",
+    "AdminVerifiedV13ClearReleaseRequest",
+    "AdminVerifiedV13ClearReleaseResponse",
     "AdminScreeningAttempt",
     "AdminScreeningDisputeItem",
     "AdminScreeningDisputeList",

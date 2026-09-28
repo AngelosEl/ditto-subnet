@@ -1394,7 +1394,9 @@ class BuildGate:
                         # the worker correctly reject the incomplete result.
                         # Carry this exact cleared observation into the normal
                         # post-build policy phase so its signed L4 evidence is
-                        # retained on the final verdict.
+                        # retained on the final verdict. Under v13 that verdict
+                        # is a held QUARANTINE until Platform verifies
+                        # source-only clears.
                         preflight_clearance = resolved_preflight
                     elif resolved_preflight.failure_disposition == "pass_inconclusive":
                         # Continue through cheap mechanical/runtime gates exactly

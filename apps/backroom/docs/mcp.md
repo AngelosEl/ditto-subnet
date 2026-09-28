@@ -304,6 +304,22 @@ not in `ath_pending_review` is a hold stranded by some other path, and
 `resolve_ath_review` answers 409 for it; `apps/platform/docs/ath-review-queue.md`
 lists the paths that produce it.
 
+## Held V13 court clears
+
+Platform does not admit a policy-v13 source-only court `clear` on a PASS
+verdict, so the screener transports it as a quarantine carrying the evidence
+code `source-review-awaiting-v13-verification`; `list_screening_quarantines`
+shows it with `screening_reason_code` `adjudicated-source-review-clear`.
+`release_verified_v13_court_clear` is the bounded release for exactly that
+hold. Platform re-verifies the retained court evidence before and again under
+the row locks: policy v13, the exact attempt and artifact SHA-256, an enforced
+adjudicator posture bound to the claim, a `clear` adjudication matching its
+signed digest, and the screener's completion-receipt signature over both. It
+then moves the submission to `evaluating` like an ordinary release and records
+the verified digests on the manual review event. Anything else answers 409 with
+the precise reason, and the hold stays for `resolve_screening_quarantine`.
+Nothing releases automatically.
+
 ## Hotkey-level upload bans
 
 An ATH rejection bans one agent UUID. The separate `banned_hotkeys` gate is a

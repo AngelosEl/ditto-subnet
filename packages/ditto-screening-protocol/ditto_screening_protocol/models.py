@@ -1953,6 +1953,12 @@ class ScreenResultRequest(BaseModel):
                 and self.outcome != ScreenResultOutcome.QUARANTINE
             ):
                 raise ValueError("adjudicated reject requires quarantine transport")
+            if (
+                self.policy_version >= STRICT_TWO_OUTCOME_POLICY_VERSION
+                and self.adjudication.decision == "clear"
+                and self.outcome != ScreenResultOutcome.QUARANTINE
+            ):
+                raise ValueError("v13 adjudicated clear requires quarantine transport")
         return self
 
     @model_validator(mode="after")

@@ -98,6 +98,8 @@ from ditto.api_models.admin_quarantine import (
     AdminValidatorAssignmentList,
     AdminValidatorAssignmentReleaseRequest,
     AdminValidatorAssignmentReleaseResponse,
+    AdminVerifiedV13ClearReleaseRequest,
+    AdminVerifiedV13ClearReleaseResponse,
     resolution_reason_code,
     review_event_resolution_reason_code,
 )
@@ -123,7 +125,10 @@ from ditto.api_server.dependencies import (
     get_session,
     get_storage_client,
 )
-from ditto.api_server.endpoints.screener import _derive_dataset_seed
+from ditto.api_server.endpoints.screener import (
+    _derive_dataset_seed,
+    completion_receipt_verifies,
+)
 from ditto.api_server.endpoints.validator import ChainDep
 from ditto.api_server.shadow_review import shadow_review_observation
 from ditto.api_server.source_diff import (
@@ -217,6 +222,7 @@ from ditto.screener_policy_state import effective_screening_policy_version
 from ditto_screening_protocol import (
     AdjudicationCompletionReceipt,
     AdjudicationRunDiagnostic,
+    SourceReviewAdjudication,
     SourceReviewNote,
     source_review_notes_digest,
 )
@@ -235,6 +241,7 @@ GeneratorDep = Annotated[DatasetGenerator, Depends(get_dataset_generator)]
 StorageDep = Annotated[S3StorageClient, Depends(get_storage_client)]
 DatasetPin = tuple[int, int, str, str, int | None, str | None]
 BATCH_PREVIEW_TTL = timedelta(minutes=10)
+V13_AWAITING_VERIFICATION_CODE = "source-review-awaiting-v13-verification"
 _USE_AGENT_IMAGE = object()
 
 
@@ -1692,6 +1699,305 @@ async def resolve_quarantine(
     return AdminQuarantineResolveResponse(
         quarantine=_item(quarantine, agent, history[quarantine.quarantine_id], coldkey),
         agent_status=agent.status,
+    )
+
+
+async def _verified_v13_court_clear(
+    session: AsyncSession, quarantine: ScreeningQuarantine, agent: Agent
+) -> dict[str, object]:
+    """Re-verify a held v13 court clear from the evidence Platform retained.
+
+    Platform accepts a v13 court clear only as a held quarantine. Releasing it
+    needs the proof the verdict receipt gate checked, re-derived from stored
+    rows rather than trusted: the exact attempt and artifact, an enforced
+    adjudicator posture bound to the claim, a ``clear`` adjudication matching
+    its signed digest, and the screener's completion-receipt signature over
+    both. Any gap refuses with 409 and the hold stays for ordinary review.
+    """
+    if quarantine.policy_version < 13:
+        raise HTTPException(
+            status_code=409,
+            detail="only a policy v13 court clear can be released this way",
+        )
+    codes = {
+        item.get("code") for item in quarantine.evidence or [] if isinstance(item, dict)
+    }
+    if (
+        quarantine.reason_code != "adjudicated-source-review-clear"
+        or V13_AWAITING_VERIFICATION_CODE not in codes
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="quarantine is not a v13 court clear awaiting verification",
+        )
+    attempt = await session.get(ScreeningAttempt, quarantine.attempt_id)
+    if (
+        attempt is None
+        or attempt.agent_id != agent.agent_id
+        or attempt.policy_version != quarantine.policy_version
+        or attempt.screener_hotkey != quarantine.screener_hotkey
+        or attempt.artifact_sha256 is None
+        or attempt.artifact_sha256.lower() != agent.sha256.lower()
+    ):
+        raise HTTPException(
+            status_code=409, detail="court clear is not bound to this artifact"
+        )
+    revision = (
+        await session.get(
+            ScreenerReviewSettingsRevision, attempt.review_settings_revision
+        )
+        if attempt.review_settings_revision is not None
+        else None
+    )
+    if (
+        revision is None
+        or revision.checksum != attempt.review_settings_checksum
+        or revision.scope != attempt.review_settings_scope
+        or ScreenerReviewSettings.model_validate(revision.settings).adjudicator_mode
+        != "enforce"
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="court clear was not produced under an enforced adjudicator",
+        )
+    event = await session.scalar(
+        select(ScreeningReviewEvent).where(
+            ScreeningReviewEvent.attempt_id == attempt.attempt_id,
+            ScreeningReviewEvent.event_kind == "automated",
+            ScreeningReviewEvent.quarantine_id == quarantine.quarantine_id,
+        )
+    )
+    evidence = event.evidence if event is not None else {}
+    try:
+        adjudication = SourceReviewAdjudication.model_validate(
+            evidence.get("adjudication")
+        )
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=409, detail="signed court adjudication was not retained"
+        ) from exc
+    if adjudication.decision != "clear":
+        raise HTTPException(
+            status_code=409,
+            detail=f"court decision is {adjudication.decision}, not clear",
+        )
+    if (
+        adjudication.policy_version != attempt.policy_version
+        or not adjudication.prompt_revision.endswith(
+            f"-policy-v{attempt.policy_version}"
+        )
+    ):
+        raise HTTPException(
+            status_code=409, detail="court adjudication policy mismatch"
+        )
+    digest = adjudication.canonical_digest()
+    if evidence.get("adjudication_digest") != digest:
+        raise HTTPException(
+            status_code=409,
+            detail="retained adjudication does not match its signed digest",
+        )
+    receipt = adjudication.completion_receipt
+    signature = evidence.get("completion_receipt_signature")
+    if (
+        receipt is None
+        or receipt.model_dump(mode="json") != quarantine.court_completion_receipt
+        or not isinstance(signature, str)
+    ):
+        raise HTTPException(
+            status_code=409, detail="court completion receipt was not retained"
+        )
+    if not completion_receipt_verifies(
+        screener_hotkey=attempt.screener_hotkey,
+        agent_id=agent.agent_id,
+        attempt_id=attempt.attempt_id,
+        artifact_sha256=attempt.artifact_sha256.lower(),
+        adjudication_digest=digest,
+        receipt=receipt,
+        signature=signature,
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="court completion receipt signature did not verify",
+        )
+    return {
+        "attempt_id": str(attempt.attempt_id),
+        "adjudication_digest": digest,
+        "completion_receipt_signer": attempt.screener_hotkey,
+        "review_settings_revision": revision.revision,
+    }
+
+
+async def _verified_clear_release_target(
+    session: AsyncSession,
+    quarantine_id: UUID,
+    payload: AdminVerifiedV13ClearReleaseRequest,
+    actor: str,
+    *,
+    for_update: bool,
+) -> tuple[ScreeningQuarantine, Agent, dict[str, object], bool]:
+    """Return the rows, verified court evidence, and whether already released.
+
+    Only this exact operator decision (actor and reason) recorded by this path
+    replays as idempotent; any other resolved quarantine is a conflict.
+    """
+    quarantine_stmt = select(ScreeningQuarantine).where(
+        ScreeningQuarantine.quarantine_id == quarantine_id
+    )
+    quarantine = await session.scalar(
+        quarantine_stmt.with_for_update() if for_update else quarantine_stmt
+    )
+    if quarantine is None:
+        raise HTTPException(status_code=404, detail="quarantine not found")
+    agent_stmt = select(Agent).where(Agent.agent_id == quarantine.agent_id)
+    agent = await session.scalar(
+        agent_stmt.with_for_update() if for_update else agent_stmt
+    )
+    if agent is None:
+        raise HTTPException(status_code=404, detail="agent not found")
+    if agent.sha256 != payload.expected_sha256:
+        raise HTTPException(status_code=409, detail="artifact identity changed")
+    if (
+        quarantine.status == "resolved"
+        and quarantine.resolution == "release"
+        and quarantine.resolved_by == actor
+        and quarantine.resolution_reason == payload.reason
+    ):
+        released = await session.scalar(
+            select(ScreeningReviewEvent.evidence)
+            .where(
+                ScreeningReviewEvent.quarantine_id == quarantine_id,
+                ScreeningReviewEvent.event_kind == "manual",
+                ScreeningReviewEvent.effective_decision == "release",
+            )
+            .order_by(
+                ScreeningReviewEvent.created_at.desc(),
+                ScreeningReviewEvent.event_id.desc(),
+            )
+            .limit(1)
+        )
+        if released is not None and "verified_v13_court_clear" in released:
+            return quarantine, agent, released["verified_v13_court_clear"], True
+    if quarantine.status != "active" or agent.status != AgentStatus.QUARANTINED:
+        raise HTTPException(status_code=409, detail="quarantine is not active")
+    # Only the hold on the agent's latest attempt may be released: an older
+    # court clear must never release a quarantine from a later screen, even of
+    # the same artifact. Same ordering as the claim path's latest attempt.
+    latest_attempt_id = await session.scalar(
+        select(ScreeningAttempt.attempt_id)
+        .where(ScreeningAttempt.agent_id == agent.agent_id)
+        .order_by(
+            ScreeningAttempt.started_at.desc(), ScreeningAttempt.attempt_id.desc()
+        )
+        .limit(1)
+    )
+    if quarantine.attempt_id is None or quarantine.attempt_id != latest_attempt_id:
+        raise HTTPException(
+            status_code=409, detail="a later screening attempt supersedes this hold"
+        )
+    return (
+        quarantine,
+        agent,
+        await _verified_v13_court_clear(session, quarantine, agent),
+        False,
+    )
+
+
+@router.post(
+    "/screening-quarantines/{quarantine_id}/release-verified-v13-clear",
+    response_model=AdminVerifiedV13ClearReleaseResponse,
+)
+async def release_verified_v13_court_clear(
+    quarantine_id: UUID,
+    payload: AdminVerifiedV13ClearReleaseRequest,
+    _admin: AdminDep,
+    session: SessionDep,
+    chain: ChainDep,
+    generator: GeneratorDep,
+    x_admin_actor: Annotated[str | None, Header()] = None,
+) -> AdminVerifiedV13ClearReleaseResponse:
+    """Release one held v13 court clear after re-verifying its signed receipt.
+
+    A narrow path beside ``resolve_quarantine`` for the
+    ``source-review-awaiting-v13-verification`` hold only; it never releases
+    automatically. The court evidence is verified before dataset generation and
+    again under the row locks. The submission then moves to ``evaluating``
+    exactly like an ordinary release, where a missing screened image is rebuilt
+    by the fail-closed build-only claim before validators can score it.
+    """
+    if x_admin_actor is None or not 1 <= len(x_admin_actor) <= 120:
+        raise HTTPException(status_code=422, detail="X-Admin-Actor is required")
+    async with session.begin():
+        *_, already_released = await _verified_clear_release_target(
+            session, quarantine_id, payload, x_admin_actor, for_update=False
+        )
+    new_dataset = (
+        None
+        if already_released
+        else await _prepare_release_dataset(session, chain, generator, quarantine_id)
+    )
+
+    async with session.begin():
+        (
+            quarantine,
+            agent,
+            verified,
+            already_released,
+        ) = await _verified_clear_release_target(
+            session, quarantine_id, payload, x_admin_actor, for_update=True
+        )
+        if not already_released:
+            prior_agent_status = agent.status
+            now = datetime.now(UTC)
+            agent.status = AgentStatus.EVALUATING
+            agent.screening_reason = payload.reason
+            agent.screening_reason_code = resolution_reason_code("release")
+            await _apply_dataset(session, agent, new_dataset)
+            quarantine.status = "resolved"
+            quarantine.resolved_at = now
+            quarantine.resolved_by = x_admin_actor
+            quarantine.resolution = "release"
+            quarantine.resolution_reason = payload.reason
+            resolution_id = uuid4()
+            session.add(
+                ScreeningQuarantineResolution(
+                    resolution_id=resolution_id,
+                    quarantine_id=quarantine.quarantine_id,
+                    resolution="release",
+                    reason=payload.reason,
+                    actor=x_admin_actor,
+                    created_at=now,
+                )
+            )
+            await append_manual_review_event(
+                session,
+                agent=agent,
+                quarantine=quarantine,
+                resolution_id=resolution_id,
+                resolution="release",
+                reason=payload.reason,
+                actor=x_admin_actor,
+                prior_agent_status=prior_agent_status,
+                next_agent_status=agent.status,
+                created_at=now,
+                verified_court_clear=verified,
+            )
+
+    logger.info(
+        "admin_actor=%s released verified v13 court clear quarantine_id=%s "
+        "agent_id=%s adjudication_digest=%s idempotent=%s",
+        x_admin_actor,
+        quarantine_id,
+        agent.agent_id,
+        verified["adjudication_digest"],
+        already_released,
+    )
+    history = await _resolution_history(session, [quarantine.quarantine_id])
+    coldkey = await get_miner_coldkey_for_agent(session, agent_id=agent.agent_id)
+    return AdminVerifiedV13ClearReleaseResponse(
+        quarantine=_item(quarantine, agent, history[quarantine.quarantine_id], coldkey),
+        agent_status=agent.status,
+        adjudication_digest=str(verified["adjudication_digest"]),
+        idempotent=already_released,
     )
 
 

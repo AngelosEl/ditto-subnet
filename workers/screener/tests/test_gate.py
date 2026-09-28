@@ -1487,7 +1487,7 @@ async def test_v13_uncertified_static_preflight_low_holds_before_build(
 async def test_v13_l4_cleared_static_lead_continues_to_build(
     make_config: Callable[..., ScreenerConfig],
 ) -> None:
-    """A source L4 clear still requires mechanical build and health gates."""
+    """A source L4 clear builds, then holds pending v13 verification."""
     tarball = _valid_tar(
         **{
             "Dockerfile": b"FROM scratch\nCOPY . .\nRUN ./scripts/local-only.sh\n",
@@ -1505,9 +1505,13 @@ async def test_v13_l4_cleared_static_lead_continues_to_build(
     async with gate._client:
         result = await _screen(gate, hashlib.sha256(tarball).hexdigest())
 
-    assert result.outcome == ScreeningOutcome.PASS
+    assert result.outcome == ScreeningOutcome.QUARANTINE
     assert result.adjudication is not None
     assert result.adjudication["decision"] == "clear"
+    assert any(
+        item.code == "source-review-awaiting-v13-verification"
+        for item in result.evidence
+    )
     assert reviewer.resolve_calls == 1
     assert reviewer.l1_calls == 0
     assert any(call[0] == "build" for call in calls)

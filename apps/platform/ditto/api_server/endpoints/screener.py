@@ -228,6 +228,7 @@ from ditto.db.queries.screening_infra_retry import INFRA_AUTO_RETRY_REASON_CODES
 from ditto.db.queries.screening_review_events import append_automated_review_event
 from ditto_screening_protocol import (
     SCREENING_POLICY_VERSION,
+    AdjudicationCompletionReceipt,
     ScreenResultOutcome,
     SourceReviewFinding,
     completion_receipt_signing_message,
@@ -4730,6 +4731,35 @@ def _require_claimed_attempt_owner(
     return attempt
 
 
+def completion_receipt_verifies(
+    *,
+    screener_hotkey: str,
+    agent_id: UUID,
+    attempt_id: UUID,
+    artifact_sha256: str,
+    adjudication_digest: str,
+    receipt: AdjudicationCompletionReceipt,
+    signature: str,
+) -> bool:
+    """Whether ``signature`` binds this L4 receipt to one exact artifact attempt.
+
+    Shared by the verdict receipt gate and the operator release of a held v13
+    court clear, so both check the same signed message.
+    """
+    return _verify_signature(
+        screener_hotkey,
+        completion_receipt_signing_message(
+            screener_hotkey=screener_hotkey,
+            agent_id=agent_id,
+            attempt_id=attempt_id,
+            artifact_sha256=artifact_sha256,
+            adjudication_digest=adjudication_digest,
+            receipt=receipt,
+        ),
+        signature,
+    )
+
+
 @router.post(
     "/agent/{agent_id}/result",
     response_model=ScreenResultResponse,
@@ -4979,18 +5009,14 @@ async def submit_result(
             raise ScreenerAuthError(
                 "completion receipt is not bound to this screening artifact"
             )
-        receipt_message = completion_receipt_signing_message(
+        if not completion_receipt_verifies(
             screener_hotkey=screener_hotkey,
             agent_id=agent_id,
             attempt_id=claimed_attempt_id,
             artifact_sha256=reported_attempt.artifact_sha256.lower(),
             adjudication_digest=payload.adjudication_digest,
             receipt=receipt,
-        )
-        if not _verify_signature(
-            screener_hotkey,
-            receipt_message,
-            payload.completion_receipt_signature,
+            signature=payload.completion_receipt_signature,
         ):
             raise ScreenerAuthError("completion receipt signature did not verify")
 

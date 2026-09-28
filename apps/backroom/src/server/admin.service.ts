@@ -165,6 +165,8 @@ import {
   rejectScreeningSubmissionInputSchema,
   rejectScreeningSubmissionResponseSchema,
   screeningSubmissionFiltersSchema,
+  releaseVerifiedV13CourtClearInputSchema,
+  releaseVerifiedV13CourtClearResponseSchema,
   resolveScreeningQuarantineInputSchema,
   resolveScreeningQuarantineResponseSchema,
   resolveScreeningDisputeInputSchema,
@@ -2005,6 +2007,23 @@ export async function resolveScreeningQuarantine(
     },
   )
   return resolveScreeningQuarantineResponseSchema.parse(payload)
+}
+
+export async function releaseVerifiedV13CourtClear(rawInput: unknown, actor: string) {
+  const input = releaseVerifiedV13CourtClearInputSchema.parse(rawInput)
+  const payload = await platformAdminRequest(
+    `/api/v1/admin/screening-quarantines/${encodeURIComponent(input.quarantineId)}/release-verified-v13-clear`,
+    {
+      method: 'POST',
+      actor,
+      body: {
+        reason: input.reason,
+        expected_sha256: input.expectedSha256,
+        confirmation: input.confirmation,
+      },
+    },
+  )
+  return releaseVerifiedV13CourtClearResponseSchema.parse(payload)
 }
 
 function toPlatformBatchDecision(decision: {

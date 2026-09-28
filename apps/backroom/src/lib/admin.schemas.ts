@@ -4759,6 +4759,22 @@ export const resolveScreeningQuarantineResponseSchema = z.object({
   agent_status: z.string(),
 })
 
+export const RELEASE_VERIFIED_V13_CLEAR_CONFIRMATION = 'RELEASE VERIFIED V13 COURT CLEAR'
+
+export const releaseVerifiedV13CourtClearInputSchema = z.object({
+  quarantineId: z.string().uuid(),
+  reason: auditReasonSchema(8),
+  expectedSha256: z.string().regex(/^[0-9a-f]{64}$/),
+  confirmation: z.literal(RELEASE_VERIFIED_V13_CLEAR_CONFIRMATION),
+})
+
+export const releaseVerifiedV13CourtClearResponseSchema = z.object({
+  quarantine: screeningQuarantineSchema,
+  agent_status: z.string(),
+  adjudication_digest: z.string().regex(/^[0-9a-f]{64}$/),
+  idempotent: z.boolean(),
+})
+
 export const screeningDisputeSchema = z.object({
   dispute_id: z.string().uuid(),
   agent_id: z.string().uuid(),

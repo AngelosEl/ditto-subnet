@@ -602,6 +602,15 @@ def _refusal_evidence(
     )
 
 
+def _awaiting_v13_verification_evidence(module_id: str) -> PolicyEvidence:
+    """Mark a v13 court clear held until Platform verifies source-only clears."""
+    return PolicyEvidence(
+        module_id,
+        "source-review-awaiting-v13-verification",
+        "source adjudication held pending v13 verification",
+    )
+
+
 @dataclass(frozen=True)
 class AgenticSourceReviewModule(_BaseModule):
     """Use private read-only source analysis as a quarantine selector only."""
@@ -631,6 +640,20 @@ class AgenticSourceReviewModule(_BaseModule):
                 ),
             )
             if decision == "clear":
+                if context.policy_version >= STRICT_TWO_OUTCOME_POLICY_VERSION:
+                    # Platform does not yet admit a v13 source-only clear on
+                    # its completion receipt. Transport it as a held
+                    # quarantine so the signed court result reaches review.
+                    return ModuleResult(
+                        ModuleDisposition.QUARANTINE,
+                        (
+                            *evidence,
+                            _awaiting_v13_verification_evidence(self.module_id),
+                        ),
+                        finding=observation.finding,
+                        adjudication=adjudication,
+                        review_notes=review_notes,
+                    )
                 return ModuleResult(
                     ModuleDisposition.CLEAR,
                     evidence,
@@ -1411,7 +1434,16 @@ class PolicyEngine:
                     "final source-review adjudication completed",
                 ),
             )
-            if court_decision not in {"clear", "reject"}:
+            held_clear = (
+                court_decision == "clear"
+                and policy_version >= STRICT_TWO_OUTCOME_POLICY_VERSION
+            )
+            if held_clear:
+                evidence = (
+                    *evidence,
+                    _awaiting_v13_verification_evidence("agentic-preexecution-review"),
+                )
+            elif court_decision not in {"clear", "reject"}:
                 evidence = (
                     *evidence,
                     _refusal_evidence("agentic-preexecution-review", adjudication),
@@ -1419,7 +1451,7 @@ class PolicyEngine:
             return self._decision(
                 (
                     ScreeningOutcome.PASS
-                    if court_decision == "clear"
+                    if court_decision == "clear" and not held_clear
                     else ScreeningOutcome.QUARANTINE
                 ),
                 evidence,

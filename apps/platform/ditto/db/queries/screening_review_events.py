@@ -122,6 +122,8 @@ async def append_automated_review_event(
             "adjudication": adjudication.model_dump(mode="json")
             if adjudication
             else None,
+            # Retained so a held v13 court clear can be re-verified on release.
+            "completion_receipt_signature": payload.completion_receipt_signature,
             "review_settings_revision": attempt.review_settings_revision,
             "review_settings_checksum": attempt.review_settings_checksum,
             "verification_receipts": await _receipts(session, attempt.attempt_id),
@@ -215,8 +217,13 @@ async def append_manual_review_event(
     prior_agent_status: object,
     next_agent_status: object,
     created_at: datetime,
+    verified_court_clear: dict[str, object] | None = None,
 ) -> ScreeningReviewEvent:
-    """Snapshot an operator resolution before later rescreens change agent state."""
+    """Snapshot an operator resolution before later rescreens change agent state.
+
+    ``verified_court_clear`` records the re-verified signed court evidence a
+    held v13 clear was released on.
+    """
     attempt = await session.get(ScreeningAttempt, quarantine.attempt_id)
     if attempt is None:
         raise ValueError("quarantine has no screening attempt")
@@ -248,6 +255,11 @@ async def append_manual_review_event(
             "review_notes_digest": quarantine.review_notes_digest,
             "review_notes": quarantine.review_notes,
             "verification_receipts": await _receipts(session, attempt.attempt_id),
+            **(
+                {"verified_v13_court_clear": verified_court_clear}
+                if verified_court_clear is not None
+                else {}
+            ),
         },
         created_at=created_at,
     )
