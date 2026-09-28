@@ -432,8 +432,10 @@ async def fail_orphaned_screening_attempts(
     build is positive evidence the attempt is still being worked.
 
     These are infrastructure failures, not inconclusive reviews. Mark them
-    ``failed`` so they retry immediately without consuming the five-expiry
-    adjudication budget.
+    ``failed`` so they do not consume the five-expiry adjudication budget. They
+    park for an operator retry and are never retried automatically: a worker
+    also stops reporting an attempt after Platform rejected its verdict or the
+    worker died mid-screen, both of which the artifact can provoke.
     """
     candidates = list(
         (
