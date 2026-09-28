@@ -2,6 +2,19 @@
 
 <!-- version list -->
 
+## v0.321.7 (2026-09-28)
+
+### Bug Fixes
+
+- **screener**: Accept the provenance-matched starter model in L2 search
+  ([#2480](https://github.com/ditto-assistant/ditto-subnet/pull/2480),
+  [`a15f028`](https://github.com/ditto-assistant/ditto-subnet/commit/a15f0289fec710c86e9163d94e19016e07cf932e))
+
+- **screener**: Return bounded L2 analyzer failures as observations
+  ([#2481](https://github.com/ditto-assistant/ditto-subnet/pull/2481),
+  [`c521b38`](https://github.com/ditto-assistant/ditto-subnet/commit/c521b38d661c81a2c4f98d6dfaca976c5a7e5ef9))
+
+
 ## v0.321.6 (2026-09-28)
 
 ### Bug Fixes
