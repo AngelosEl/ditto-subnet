@@ -110,7 +110,8 @@ def _check_gzip_valid(tar_path: Path) -> PreflightCheckResult:
     try:
         with gzip.open(tar_path, "rb") as gz:
             gz.read(1024)
-    except (OSError, gzip.BadGzipFile) as e:
+    # A truncated stream raises EOFError, which is not an OSError.
+    except (OSError, EOFError, gzip.BadGzipFile) as e:
         return PreflightCheckResult(
             name="gzip_valid",
             passed=False,
@@ -128,7 +129,7 @@ def _check_tar_opens(tar_path: Path) -> PreflightCheckResult:
     try:
         with tarfile.open(tar_path, "r:gz") as tar:
             names = tar.getnames()
-    except tarfile.TarError as e:
+    except (tarfile.TarError, EOFError, OSError) as e:
         return PreflightCheckResult(
             name="tar_opens",
             passed=False,
@@ -227,7 +228,7 @@ def _check_archive_contract(tar_path: Path) -> PreflightCheckResult:
                     "Dockerfile is not valid UTF-8 text",
                     "commit a readable UTF-8 Dockerfile that builds the harness",
                 )
-    except (tarfile.TarError, OSError):
+    except (tarfile.TarError, EOFError, OSError):
         return _contract_failure(
             "SCR-ARCHIVE-006",
             "archive is not a readable gzip-compressed tar",

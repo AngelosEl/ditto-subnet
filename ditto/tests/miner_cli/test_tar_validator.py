@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import io
 import logging
+import os
 import tarfile
 from pathlib import Path
 
@@ -44,6 +45,36 @@ class TestPreflight:
             "tar_opens",
             "archive_contract",
         }
+
+    @pytest.mark.parametrize(
+        ("keep", "failed"),
+        [
+            (2 / 3, {"tar_opens"}),
+            (50, {"gzip_valid", "tar_opens"}),
+        ],
+    )
+    def test_truncated_tarball_fails_checks_instead_of_raising(
+        self, tmp_path: Path, keep: float, failed: set[str]
+    ) -> None:
+        # An interrupted download: gzip and tarfile raise EOFError, which is
+        # not an OSError, on a stream that ends before its end-of-stream marker.
+        full = tmp_path / "full.tar.gz"
+        with tarfile.open(full, "w:gz") as tar:
+            for name, data in (
+                ("Dockerfile", b"FROM scratch\n"),
+                ("payload.bin", os.urandom(300_000)),
+            ):
+                info = tarfile.TarInfo(name)
+                info.size = len(data)
+                tar.addfile(info, io.BytesIO(data))
+        raw = full.read_bytes()
+        cut = tmp_path / "truncated.tar.gz"
+        cut.write_bytes(raw[: int(len(raw) * keep)] if keep < 1 else raw[: int(keep)])
+
+        result = run_preflight(cut)
+
+        assert result.passed is False
+        assert {c.name for c in result.checks if not c.passed} == failed
 
     def test_sha256_is_stable_across_calls(self, good_tar: Path) -> None:
         first = run_preflight(good_tar).sha256
