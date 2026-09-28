@@ -173,7 +173,7 @@ L2_STATIC_HOLD_REVISION = "l2-integrity-static-hold-v4"
 L2_DOSSIER_REVISION = "language-neutral-source-v14"
 L2_CAUSE_REASONING_EFFORT = "medium"
 L2_SAFETY_ADJUDICATOR_REASONING_EFFORT = "low"
-L2_HARNESS_REVISION = "l2-isolated-coding-harness-v21"
+L2_HARNESS_REVISION = "l2-isolated-coding-harness-v22"
 L2_PRICING_REVISION = "openrouter-catalog-2026-08-31-terra-glm-5-2-sol-reported-cost-v3"
 L2_STARTER_MANIFESTS = tuple(
     sorted((Path(__file__).parent / "data").glob("starter-kit-provenance-*.json"))
@@ -628,6 +628,10 @@ _CHALLENGE_OVERTURN_CONFIDENCE = 1.0
 
 class L2InconclusiveError(ValueError):
     """Artifact shape cannot be completely represented by the inert harness."""
+
+
+class L2LeaseBudgetExhausted(ValueError):
+    """The screening lease ran out before or during an analyzer call."""
 
 
 class L2TrajectoryError(ValueError):
@@ -1978,7 +1982,11 @@ def _l2_tools_for_policy(
                 "description": (
                     "Run bounded bash for source navigation in a fresh no-network, "
                     "credential-free container with the exact source read-only. "
-                    "Use rg, find, sed, and coreutils; do not execute candidate code."
+                    "Use rg, find, sed, and coreutils; do not execute candidate code. "
+                    "Each call keeps at most 64,000 bytes of stdout and 4,096 "
+                    "bytes of stderr and runs for at most 30 s; over-bound output "
+                    "is truncated and must be narrowed (e.g. rg -l, head, sed -n) "
+                    "before submitting."
                 ),
                 "parameters": {
                     "type": "object",
@@ -2229,16 +2237,34 @@ class AnalyzerHarness(Protocol):
 
 
 async def _read_bounded_stream(
-    stream: asyncio.StreamReader | None, limit: int
-) -> bytes:
+    proc: asyncio.subprocess.Process,
+    stream: asyncio.StreamReader | None,
+    limit: int,
+    output: bytearray,
+) -> bool:
+    """Keep the first ``limit`` bytes; on overflow kill ``proc`` and say so.
+
+    The pipe is drained to EOF after the kill so the subprocess transport can
+    close; a paused, unread pipe would otherwise stall ``proc.wait()``.
+    """
     if stream is None:
         raise ValueError("sandbox output pipe is unavailable")
-    output = bytearray()
+    overflowed = False
     while chunk := await stream.read(8_192):
-        if len(output) + len(chunk) > limit:
-            raise ValueError("sandbox output exceeded its bound")
-        output.extend(chunk)
-    return bytes(output)
+        kept = chunk[: limit - len(output)]
+        output.extend(kept)
+        if len(kept) < len(chunk) and not overflowed:
+            overflowed = True
+            with contextlib.suppress(ProcessLookupError):
+                proc.kill()
+    return overflowed
+
+
+def _bounded_analyzer_error(code: str) -> str:
+    """A per-call bound the model can retry within, not an infra failure."""
+    return json.dumps(
+        {"error": code, "truncated": True}, sort_keys=True, separators=(",", ":")
+    )
 
 
 async def _remove_sandbox_container(
@@ -2312,12 +2338,11 @@ class IsolatedCodingHarness:
         if deadline is not None:
             remaining = deadline - asyncio.get_running_loop().time()
             if remaining <= 0:
-                raise ValueError("L2 analyzer exceeded lease budget")
+                raise L2LeaseBudgetExhausted("L2 analyzer exceeded lease budget")
             timeout = min(timeout, remaining)
+        lease_clamped = timeout < self._timeout_seconds
         source = str(workspace.resolve())
-        container_name = (
-            f"ditto-l2-shell-{uuid4().hex[:20]}" if command == "shell" else None
-        )
+        container_name = f"ditto-l2-{command.replace('_', '-')}-{uuid4().hex[:20]}"
         container_user = f"{os.getuid()}:{os.getgid()}"
         process_env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin")}
         if self._rootless_docker_host is not None:
@@ -2337,7 +2362,8 @@ class IsolatedCodingHarness:
             "run",
             "-i",
             "--rm",
-            *(["--name", container_name] if container_name else []),
+            "--name",
+            container_name,
             "--network",
             "none",
             "--read-only",
@@ -2374,77 +2400,82 @@ class IsolatedCodingHarness:
             )
         else:
             args.extend([self._image, command])
-        proc = await asyncio.create_subprocess_exec(
-            *args,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=process_env,
-        )
         encoded = (
             b""
             if command == "shell"
             else json.dumps(arguments, sort_keys=True, separators=(",", ":")).encode()
         )
+        stdout = bytearray()
+        stderr = bytearray()
+        overflowed = timed_out = exited = False
+        proc: asyncio.subprocess.Process | None = None
         try:
+            proc = await asyncio.create_subprocess_exec(
+                *args,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=process_env,
+            )
             if command == "shell":
                 assert proc.stdin is not None
                 proc.stdin.close()
-                stdout, stderr = await asyncio.wait_for(
-                    asyncio.gather(
-                        _read_bounded_stream(proc.stdout, 64_000),
-                        _read_bounded_stream(proc.stderr, 4_096),
-                    ),
-                    timeout=timeout,
+                overflowed = any(
+                    await asyncio.wait_for(
+                        asyncio.gather(
+                            _read_bounded_stream(proc, proc.stdout, 64_000, stdout),
+                            _read_bounded_stream(proc, proc.stderr, 4_096, stderr),
+                        ),
+                        timeout=timeout,
+                    )
                 )
                 await asyncio.wait_for(proc.wait(), timeout=timeout)
             else:
-                stdout, stderr = await asyncio.wait_for(
+                out, err = await asyncio.wait_for(
                     proc.communicate(encoded), timeout=timeout
                 )
-        except asyncio.CancelledError:
-            with contextlib.suppress(ProcessLookupError):
-                proc.kill()
-            with contextlib.suppress(Exception):
-                await proc.wait()
-            if container_name is not None:
-                await _remove_sandbox_container(
-                    self._docker_bin, container_name, process_env
-                )
-            raise
+                stdout += out
+                stderr += err
+            exited = not overflowed
         except TimeoutError:
-            with contextlib.suppress(ProcessLookupError):
-                proc.kill()
-            with contextlib.suppress(Exception):
-                await proc.wait()
-            if container_name is not None:
+            timed_out = True
+        finally:
+            # --rm removes the container only after it exits on its own; killing
+            # the docker client does not stop it. Reap it by name on every other
+            # path: overflow, timeout, cancellation (even mid-spawn) and errors.
+            if not exited:
+                if proc is not None:
+                    with contextlib.suppress(ProcessLookupError):
+                        proc.kill()
+                    with contextlib.suppress(Exception):
+                        await proc.wait()
                 await _remove_sandbox_container(
                     self._docker_bin, container_name, process_env
                 )
-            raise ValueError("L2 analyzer timed out") from None
-        except ValueError:
-            with contextlib.suppress(ProcessLookupError):
-                proc.kill()
-            with contextlib.suppress(Exception):
-                await proc.wait()
-            if container_name is not None:
-                await _remove_sandbox_container(
-                    self._docker_bin, container_name, process_env
-                )
-            raise
+        assert proc is not None
+        if timed_out and lease_clamped:
+            raise L2LeaseBudgetExhausted("L2 analyzer exceeded lease budget")
         if command == "shell":
-            return json.dumps(
-                {
-                    "exit_code": proc.returncode,
-                    "stdout": stdout.decode("utf-8", errors="replace"),
-                    "stderr": stderr.decode("utf-8", errors="replace"),
-                    "truncated": False,
-                },
-                sort_keys=True,
-                separators=(",", ":"),
-            )
+            result: dict[str, object] = {
+                "exit_code": proc.returncode,
+                "stdout": stdout.decode("utf-8", errors="replace"),
+                "stderr": stderr.decode("utf-8", errors="replace"),
+                "truncated": False,
+            }
+            if timed_out or overflowed:
+                # A bounded observation, not an infrastructure failure: the
+                # model sees the kept prefix and must narrow the script before
+                # it may submit.
+                result.update(
+                    exit_code=None,
+                    truncated=True,
+                    error="shell-timeout" if timed_out else "shell-output-bounded",
+                )
+            return json.dumps(result, sort_keys=True, separators=(",", ":"))
+        if timed_out:
+            return _bounded_analyzer_error("analyzer-timeout")
         if len(stdout) > _MAX_TOOL_BYTES or len(stderr) > 4_096:
-            raise ValueError("L2 analyzer exceeded output budget")
+            return _bounded_analyzer_error("analyzer-output-truncated")
         if proc.returncode == 2:
             decoded = stdout.decode("utf-8")
             try:
@@ -2523,7 +2554,7 @@ class InProcessAnalyzerHarness:
         if deadline is not None:
             remaining = deadline - asyncio.get_running_loop().time()
             if remaining <= 0:
-                raise ValueError("L2 analyzer exceeded lease budget")
+                raise L2LeaseBudgetExhausted("L2 analyzer exceeded lease budget")
             timeout = min(timeout, remaining)
         proc = await asyncio.create_subprocess_exec(
             self._python_bin,
@@ -2553,9 +2584,13 @@ class InProcessAnalyzerHarness:
             proc.kill()
             with contextlib.suppress(Exception):
                 await proc.wait()
-            raise ValueError("L2 analyzer timed out") from None
+            if timeout < self._timeout_seconds:
+                raise L2LeaseBudgetExhausted(
+                    "L2 analyzer exceeded lease budget"
+                ) from None
+            return _bounded_analyzer_error("analyzer-timeout")
         if len(stdout) > _MAX_TOOL_BYTES or len(stderr) > 4_096:
-            raise ValueError("L2 analyzer exceeded output budget")
+            return _bounded_analyzer_error("analyzer-output-truncated")
         if proc.returncode == 2:
             decoded = stdout.decode("utf-8")
             try:
@@ -4096,6 +4131,13 @@ class TerraSolSourceReviewAgent:
                 analysis = json.loads(output)
             except json.JSONDecodeError as error:
                 raise ValueError("L2 dossier analyzer returned invalid JSON") from error
+            timed_out = isinstance(analysis, dict) and (
+                analysis.get("error") == "analyzer-timeout"
+            )
+            if timed_out:
+                # The fixed dossier pass cannot be narrowed by a model, so a
+                # slow analyzer stays infrastructure rather than artifact shape.
+                raise ValueError("L2 analyzer timed out")
             if not isinstance(analysis, dict) or analysis.get("error"):
                 raise L2InconclusiveError(
                     f"L2 dossier analyzer {command} was unavailable"
@@ -4763,8 +4805,12 @@ class TerraSolSourceReviewAgent:
                         tool_output = await self._harness.run(
                             workspace, name, arguments, deadline=deadline
                         )
+                except L2LeaseBudgetExhausted as error:
+                    raise failure("lease-budget-exhausted") from error
                 except ValueError as error:
-                    raise failure("analyzer-contract") from error
+                    raise failure(
+                        "analyzer-contract", _classified_suffix(error)
+                    ) from error
                 read_bytes_used += len(tool_output.encode("utf-8"))
                 path = arguments.get("path")
                 if isinstance(path, str):
@@ -7252,11 +7298,7 @@ def _served_generator_hold(
 # giving Platform/Backroom a cause instead of collapsing everything into
 # ``l2-valueerror``. Unmapped messages still degrade to the historical shape.
 _L2_FAILURE_CODES: Mapping[str, str] = {
-    "sandbox output exceeded its bound": "sandbox-output-bounded",
     "sandbox output pipe is unavailable": "sandbox-unavailable",
-    "shell broker response was incomplete": "sandbox-response-incomplete",
-    "shell broker response was invalid": "sandbox-response-invalid",
-    "shell exceeded review deadline": "lease-budget-exhausted",
     "shell requires one bounded script": "sandbox-request-invalid",
     "shell requires one script": "sandbox-request-invalid",
     "shell script is outside the bounded size": "sandbox-request-invalid",
@@ -7266,7 +7308,6 @@ _L2_FAILURE_CODES: Mapping[str, str] = {
     ),
     "L2 analyzer CPU limit must be between 0.25 and 2.0": "analyzer-cpu-limit",
     "L2 analyzer exceeded lease budget": "analyzer-lease-budget",
-    "L2 analyzer exceeded output budget": "analyzer-output-budget",
     "L2 analyzer rejected its request": "analyzer-rejected",
     "L2 analyzer returned invalid JSON": "analyzer-invalid-json",
     "L2 analyzer timed out": "analyzer-timeout",
