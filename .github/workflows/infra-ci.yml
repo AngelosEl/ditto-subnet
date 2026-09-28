@@ -106,6 +106,9 @@ jobs:
           python3 tests/test_screener_cache_gc.py
           uvx --from ansible-core==2.21.2 ansible-playbook --check -i localhost, tests/screener-cache-gc.yml
 
+      - name: Prove the screener checkout migrates only between repositories, without deleting it
+        run: python3 tests/test_screener_checkout_migration.py
+
       - name: Prove the PostgreSQL collector logs stay bounded and the data disk stays off
         run: |
           python3 tests/test_postgres_log_gc.py

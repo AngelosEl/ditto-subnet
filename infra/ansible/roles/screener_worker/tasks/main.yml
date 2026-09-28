@@ -54,13 +54,62 @@
   changed_when: false
   failed_when: false
 
-- name: Remove the retired co-located ditto-subnet screener checkout
-  ansible.builtin.file:
-    path: "{{ screener_root }}/src"
-    state: absent
+# Another spelling of the same repository (ssh vs https, .git, case) is updated
+# in place by the git task below. Only a different repository is replaced, and
+# never by deleting the live checkout: the replacement is cloned and verified
+# beside it, then swapped in with the live venv carried over, so the systemd
+# entrypoint stays executable if a later step fails. The previous checkout is
+# kept at src.prev for rollback until the next migration.
+- name: Migrate the screener checkout to a different repository
   when:
     - screener_existing_origin.rc == 0
-    - screener_existing_origin.stdout | trim != screener_repo_url
+    - screener_existing_origin.stdout | git_repo_identity != screener_repo_url | git_repo_identity
+  vars:
+    screener_staged_source_dir: "{{ screener_root }}/src.next/{{ screener_source_dir | relpath(screener_root ~ '/src') }}"
+    screener_staged_venv: "{{ screener_root }}/src.next/{{ screener_venv | relpath(screener_root ~ '/src') }}"
+  block:
+    - name: Clear leftovers from an earlier migration
+      ansible.builtin.file:
+        path: "{{ screener_root }}/{{ item }}"
+        state: absent
+      loop:
+        - src.next
+        - src.prev
+
+    - name: Clone the replacement checkout beside the live one
+      ansible.builtin.git:
+        repo: "{{ screener_repo_url }}"
+        dest: "{{ screener_root }}/src.next"
+        version: "{{ screener_branch }}"
+      become_user: "{{ screener_user }}"
+      register: screener_migrated_clone
+
+    - name: Verify the replacement contains the worker project and executor installer
+      ansible.builtin.command:
+        argv:
+          - test
+          - -f
+          - "{{ screener_staged_source_dir }}/uv.lock"
+          - -a
+          - -x
+          - "{{ screener_staged_source_dir }}/scripts/install-rootless-docker.sh"
+      changed_when: false
+
+    - name: Carry the live worker venv into the replacement
+      ansible.builtin.command:
+        argv:
+          - cp
+          - -a
+          - "{{ screener_venv }}"
+          - "{{ screener_staged_venv }}"
+        removes: "{{ screener_venv }}"
+      when: screener_venv.startswith(screener_root ~ '/src/')
+
+    - name: Swap the verified replacement into the service path
+      ansible.builtin.shell:
+        cmd: mv -T src src.prev && { mv -T src.next src || { mv -T src.prev src; exit 1; }; }
+        chdir: "{{ screener_root }}"
+      changed_when: true
 
 - name: Clone/update ditto-subnet at the pinned branch
   ansible.builtin.git:
@@ -70,6 +119,9 @@
     force: true
   become_user: "{{ screener_user }}"
   register: screener_clone
+  # A migrated checkout is already at the pinned revision; it still needs the
+  # executor install and venv sync that key off this result.
+  changed_when: screener_clone.changed or screener_migrated_clone is changed
 
 - name: Inspect the dedicated executor unit before converge
   ansible.builtin.stat:
