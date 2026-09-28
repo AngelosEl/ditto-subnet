@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.325.1 (2026-09-28)
+
+### Bug Fixes
+
+- **platform**: Gate eligibility on all live weight setters
+  ([#2512](https://github.com/ditto-assistant/ditto-subnet/pull/2512),
+  [`11c1972`](https://github.com/ditto-assistant/ditto-subnet/commit/11c1972e41d60f59e9fca46d3b8c5ef1a81cf7b8))
+
+
 ## v0.325.0 (2026-09-28)
 
 ### Chores
