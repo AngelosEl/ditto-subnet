@@ -462,23 +462,84 @@ async def _seed_running_attempt(
     agent_id: UUID,
     screener_hotkey: str = _SCREENER_HOTKEY,
     policy_version: int = SCREENING_POLICY_VERSION,
+    started_at: datetime | None = None,
+    deadline: datetime | None = None,
+    status: str = "running",
+    review_settings: ScreenerReviewSettingsRevision | None = None,
+    review_settings_instance_id: str = "ditto-screener-prod",
 ) -> UUID:
     """Persist a live screening lease, as a claim by ``screener_hotkey`` would."""
     attempt_id = uuid4()
-    now = datetime.now(UTC)
+    started_at = started_at or datetime.now(UTC)
     async with maker() as session, session.begin():
-        session.add(
-            ScreeningAttempt(
-                attempt_id=attempt_id,
-                agent_id=agent_id,
-                screener_hotkey=screener_hotkey,
-                policy_version=policy_version,
-                status="running",
-                started_at=now,
-                deadline=now + timedelta(minutes=30),
-            )
+        attempt = ScreeningAttempt(
+            attempt_id=attempt_id,
+            agent_id=agent_id,
+            screener_hotkey=screener_hotkey,
+            policy_version=policy_version,
+            status=status,
+            started_at=started_at,
+            deadline=deadline or started_at + timedelta(minutes=30),
         )
+        if review_settings is not None:
+            attempt.review_settings_revision = review_settings.revision
+            attempt.review_settings_instance_id = review_settings_instance_id
+            attempt.review_settings_scope = review_settings.scope
+            attempt.review_settings_checksum = review_settings.checksum
+        session.add(attempt)
     return attempt_id
+
+
+async def _seed_review_settings_revision(
+    maker: async_sessionmaker[AsyncSession], settings: ScreenerReviewSettings
+) -> ScreenerReviewSettingsRevision:
+    async with maker() as session, session.begin():
+        revision = ScreenerReviewSettingsRevision(
+            parent_revision=0,
+            scope="ditto-screener-prod",
+            settings=settings.model_dump(mode="json"),
+            checksum=_review_settings_checksum(settings),
+            reason="bounded lease lifetime test",
+            actor="test",
+        )
+        session.add(revision)
+    return revision
+
+
+async def _attempt_deadline(
+    maker: async_sessionmaker[AsyncSession], attempt_id: UUID
+) -> datetime:
+    async with maker() as session:
+        attempt = await session.get(ScreeningAttempt, attempt_id)
+        assert attempt is not None
+        return attempt.deadline
+
+
+async def _screening_heartbeat(
+    client: httpx.AsyncClient,
+    *,
+    agent_id: UUID,
+    timestamp: int,
+    stage: str,
+    started_at: datetime,
+    instance_id: str | None = None,
+) -> datetime | None:
+    """Send an accepted screening heartbeat; return the renewed lease, if any."""
+    response = await client.post(
+        "/api/v1/screener/heartbeat",
+        json=_heartbeat_payload(
+            timestamp=timestamp,
+            state="screening",
+            active_agent_id=agent_id,
+            protocol_version=2 if instance_id is None else 3,
+            instance_id=instance_id,
+            progress={"stage": stage, "started_at": int(started_at.timestamp())},
+        ),
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["accepted"] is True
+    lease_deadline = response.json()["lease_deadline"]
+    return datetime.fromisoformat(lease_deadline) if lease_deadline else None
 
 
 async def _seed_verified_image_upload(
@@ -2279,7 +2340,7 @@ class TestHeartbeat:
                     policy_version=SCREENING_POLICY_VERSION,
                     status="running",
                     started_at=started,
-                    deadline=started + timedelta(minutes=30),
+                    deadline=started + timedelta(minutes=10),
                 )
             )
         timestamp = int(datetime.now(UTC).timestamp())
@@ -2305,7 +2366,7 @@ class TestHeartbeat:
             )
             assert attempt is not None
             assert attempt.deadline == renewed_deadline
-        unchanged = await client.post(
+        same_stage = await client.post(
             "/api/v1/screener/heartbeat",
             json=_heartbeat_payload(
                 timestamp=timestamp + 1,
@@ -2318,15 +2379,19 @@ class TestHeartbeat:
                 },
             ),
         )
-        assert unchanged.status_code == 200
-        assert unchanged.json()["accepted"] is True
-        assert unchanged.json()["lease_deadline"] is None
+        assert same_stage.status_code == 200
+        assert same_stage.json()["accepted"] is True
+        # Liveness alone renews: a long stage must not outlive a frozen lease.
+        same_stage_deadline = datetime.fromisoformat(
+            same_stage.json()["lease_deadline"]
+        )
+        assert same_stage_deadline >= renewed_deadline
         async with session_maker() as session:
             attempt = await session.scalar(
                 select(ScreeningAttempt).where(ScreeningAttempt.agent_id == agent_id)
             )
             assert attempt is not None
-            assert attempt.deadline == renewed_deadline
+            assert attempt.deadline == same_stage_deadline
         advanced = await client.post(
             "/api/v1/screener/heartbeat",
             json=_heartbeat_payload(
@@ -2385,6 +2450,263 @@ class TestHeartbeat:
         assert entry["online"] is False
         assert entry["active_agent_id"] is None
         assert entry["screening_progress"] is None
+
+    async def test_screening_heartbeat_renews_without_stage_advance(
+        self,
+        app: FastAPI,
+        client: httpx.AsyncClient,
+        session_maker: async_sessionmaker[AsyncSession],
+    ) -> None:
+        _install_db(app, session_maker)
+        agent_id = await _seed_agent(session_maker, status=AgentStatus.SCREENING)
+        claimed_at = datetime.now(UTC).replace(microsecond=0)
+        attempt_id = await _seed_running_attempt(
+            session_maker,
+            agent_id=agent_id,
+            started_at=claimed_at,
+            deadline=claimed_at + timedelta(minutes=10),
+        )
+        timestamp = int(claimed_at.timestamp())
+        assert await _screening_heartbeat(
+            client,
+            agent_id=agent_id,
+            timestamp=timestamp,
+            stage="source_review_60",
+            started_at=claimed_at,
+        )
+        for step in (1, 2, 3):
+            # Age the claim four minutes per step instead of sleeping in L2.
+            async with session_maker() as session, session.begin():
+                await session.execute(
+                    update(ScreeningAttempt)
+                    .where(ScreeningAttempt.attempt_id == attempt_id)
+                    .values(
+                        started_at=ScreeningAttempt.started_at - timedelta(minutes=4),
+                        deadline=ScreeningAttempt.deadline - timedelta(minutes=4),
+                    )
+                )
+            renewed = await _screening_heartbeat(
+                client,
+                agent_id=agent_id,
+                timestamp=timestamp + step,
+                stage="source_review_60",
+                started_at=claimed_at,
+            )
+            assert renewed is not None
+            assert renewed > datetime.now(UTC) + timedelta(minutes=9)
+            assert await _attempt_deadline(session_maker, attempt_id) == renewed
+        async with session_maker() as session:
+            attempt = await session.get(ScreeningAttempt, attempt_id)
+            assert attempt is not None
+            # Twelve minutes into one stage, well past the original lease.
+            assert attempt.deadline > attempt.started_at + timedelta(minutes=20)
+
+    async def test_same_stage_renewal_is_capped_by_attempt_lifetime(
+        self,
+        app: FastAPI,
+        client: httpx.AsyncClient,
+        session_maker: async_sessionmaker[AsyncSession],
+    ) -> None:
+        _install_db(app, session_maker)
+        revision = await _seed_review_settings_revision(
+            session_maker,
+            ScreenerReviewSettings(
+                source_review_timeout_seconds=60,
+                timeout_seconds=30,
+                adjudicator_mode="shadow",
+                adjudicator_timeout_seconds=120,
+            ),
+        )
+        now = datetime.now(UTC).replace(microsecond=0)
+        timestamp = int(now.timestamp())
+        # Bound: 60 s L1 + 30 s L2 + 120 s court + 45 min non-review work.
+        bound_started = now - timedelta(minutes=45)
+        bound_cap = bound_started + timedelta(minutes=48, seconds=30)
+        # Unbound attempts fall back to a 150 minute lifetime.
+        unbound_started = now - timedelta(minutes=145)
+        unbound_cap = unbound_started + timedelta(minutes=150)
+        for index, (started, cap, review_settings) in enumerate(
+            (
+                (bound_started, bound_cap, revision),
+                (unbound_started, unbound_cap, None),
+            )
+        ):
+            agent_id = await _seed_agent(
+                session_maker, status=AgentStatus.SCREENING, name=f"capped-{index}"
+            )
+            attempt_id = await _seed_running_attempt(
+                session_maker,
+                agent_id=agent_id,
+                started_at=started,
+                deadline=now + timedelta(minutes=1),
+                review_settings=review_settings,
+                review_settings_instance_id="legacy",
+            )
+            assert (
+                await _screening_heartbeat(
+                    client,
+                    agent_id=agent_id,
+                    timestamp=timestamp + 2 * index,
+                    stage="source_review_60",
+                    started_at=started,
+                )
+                == cap
+            )
+            assert (
+                await _screening_heartbeat(
+                    client,
+                    agent_id=agent_id,
+                    timestamp=timestamp + 2 * index + 1,
+                    stage="source_review_60",
+                    started_at=started,
+                )
+                is None
+            )
+            assert await _attempt_deadline(session_maker, attempt_id) == cap
+
+    async def test_sibling_instance_heartbeat_does_not_renew(
+        self,
+        app: FastAPI,
+        client: httpx.AsyncClient,
+        session_maker: async_sessionmaker[AsyncSession],
+    ) -> None:
+        _install_db(app, session_maker)
+        revision = await _seed_review_settings_revision(
+            session_maker, ScreenerReviewSettings()
+        )
+        agent_id = await _seed_agent(session_maker, status=AgentStatus.SCREENING)
+        started = datetime.now(UTC).replace(microsecond=0)
+        deadline = started + timedelta(minutes=5)
+        attempt_id = await _seed_running_attempt(
+            session_maker,
+            agent_id=agent_id,
+            started_at=started,
+            deadline=deadline,
+            review_settings=revision,
+            review_settings_instance_id="subnet-screener-1-worker-1",
+        )
+        timestamp = int(started.timestamp())
+        sibling = await _screening_heartbeat(
+            client,
+            agent_id=agent_id,
+            timestamp=timestamp,
+            stage="source_review_60",
+            started_at=started,
+            instance_id="subnet-screener-1-worker-2",
+        )
+        assert sibling is None
+        assert await _attempt_deadline(session_maker, attempt_id) == deadline
+        owner = await _screening_heartbeat(
+            client,
+            agent_id=agent_id,
+            timestamp=timestamp,
+            stage="source_review_60",
+            started_at=started,
+            instance_id="subnet-screener-1-worker-1",
+        )
+        assert owner is not None
+        assert await _attempt_deadline(session_maker, attempt_id) == owner
+
+    async def test_building_after_preflight_source_review_renews(
+        self,
+        app: FastAPI,
+        client: httpx.AsyncClient,
+        session_maker: async_sessionmaker[AsyncSession],
+    ) -> None:
+        _install_db(app, session_maker)
+        agent_id = await _seed_agent(session_maker, status=AgentStatus.SCREENING)
+        started = datetime.now(UTC).replace(microsecond=0)
+        attempt_id = await _seed_running_attempt(
+            session_maker,
+            agent_id=agent_id,
+            started_at=started,
+            deadline=started + timedelta(minutes=10),
+        )
+        timestamp = int(started.timestamp())
+        stages = ("source_review_90", "building", "starting", "downloading")
+        leases = [
+            await _screening_heartbeat(
+                client,
+                agent_id=agent_id,
+                timestamp=timestamp + offset,
+                stage=stage,
+                started_at=started,
+            )
+            for offset, stage in enumerate(stages)
+        ]
+        # The static preflight lead is reviewed before the build; only a real
+        # regression past it (back to downloading) stops renewing.
+        assert all(lease is not None for lease in leases[:3])
+        assert leases[3] is None
+        assert await _attempt_deadline(session_maker, attempt_id) == leases[2]
+
+    async def test_dead_attempt_or_changed_job_does_not_renew(
+        self,
+        app: FastAPI,
+        client: httpx.AsyncClient,
+        session_maker: async_sessionmaker[AsyncSession],
+    ) -> None:
+        _install_db(app, session_maker)
+        now = datetime.now(UTC).replace(microsecond=0)
+        timestamp = int(now.timestamp())
+        live_agent = await _seed_agent(
+            session_maker, status=AgentStatus.SCREENING, name="live-agent"
+        )
+        live_attempt = await _seed_running_attempt(
+            session_maker,
+            agent_id=live_agent,
+            started_at=now,
+            deadline=now + timedelta(minutes=10),
+        )
+        renewed = await _screening_heartbeat(
+            client,
+            agent_id=live_agent,
+            timestamp=timestamp,
+            stage="building",
+            started_at=now,
+        )
+        assert renewed is not None
+        restarted = await _screening_heartbeat(
+            client,
+            agent_id=live_agent,
+            timestamp=timestamp + 1,
+            stage="building",
+            started_at=now + timedelta(seconds=1),
+        )
+        assert restarted is None
+        assert await _attempt_deadline(session_maker, live_attempt) == renewed
+        started = now - timedelta(minutes=20)
+        for index, (status, deadline) in enumerate(
+            (
+                ("running", now - timedelta(seconds=1)),
+                ("expired", now - timedelta(seconds=1)),
+                ("passed", now + timedelta(minutes=1)),
+            )
+        ):
+            agent_id = await _seed_agent(
+                session_maker, status=AgentStatus.SCREENING, name=f"dead-{index}"
+            )
+            attempt_id = await _seed_running_attempt(
+                session_maker,
+                agent_id=agent_id,
+                started_at=started,
+                deadline=deadline,
+                status=status,
+            )
+            assert (
+                await _screening_heartbeat(
+                    client,
+                    agent_id=agent_id,
+                    timestamp=timestamp + 2 + index,
+                    stage="source_review_60",
+                    started_at=started,
+                )
+                is None
+            )
+            async with session_maker() as session:
+                attempt = await session.get(ScreeningAttempt, attempt_id)
+                assert attempt is not None
+                assert (attempt.status, attempt.deadline) == (status, deadline)
 
     async def test_records_signed_metrics_and_is_publicly_visible(
         self,

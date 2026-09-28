@@ -319,13 +319,20 @@ _SCREENED_IMAGE_UPLOAD_TTL = timedelta(minutes=15)
 _SCREENED_IMAGE_PART_SIZE = 64 * 1024**2
 # One screening attempt: download + Docker build + serve/health + bounded source
 # review + image export + multipart upload. Renewable workers carry only a short
-# liveness window; accepted signed progress keeps that window ahead of active
-# work instead of pre-granting the full worst-case pipeline duration.
+# liveness window; every accepted signed heartbeat from the job holding the
+# attempt keeps that window ahead of active work, even while one long stage
+# (build, L2, the court) does not advance. Renewal never extends an attempt past
+# a hard lifetime derived from its bound review budgets, so a live but stuck
+# worker still expires instead of holding the agent forever.
 # Legacy workers derive a fixed local deadline and cannot consume renewals.
 # Keep their old lease until the fleet rolls, while new workers explicitly opt
 # into a short lease extended by accepted signed progress heartbeats.
 _LEGACY_SCREENING_LEASE_TTL = timedelta(minutes=70)
 _RENEWABLE_SCREENING_LEASE_TTL = timedelta(minutes=10)
+# Hard attempt lifetime = source review + L2 (+ court when enabled) budgets plus
+# this allowance for build, runtime, image export, and upload.
+_SCREENING_NON_REVIEW_ALLOWANCE = timedelta(minutes=45)
+_UNBOUND_SCREENING_LIFETIME_CAP = timedelta(minutes=150)
 _SCREENER_PROGRESS_RANK = {
     stage: rank
     for rank, stage in enumerate(
@@ -351,6 +358,12 @@ _SCREENER_PROGRESS_RANK = {
         )
     )
 }
+_SOURCE_REVIEW_PROGRESS_STAGES = frozenset(
+    stage for stage in _SCREENER_PROGRESS_RANK if stage.startswith("source_review_")
+)
+# A static preflight lead is reviewed before the build, so these stages may
+# legitimately follow a source-review stage within one job.
+_POST_PREFLIGHT_PROGRESS_STAGES = frozenset({"building", "starting", "health_check"})
 _HEARTBEAT_MAX_SKEW_SECONDS = 300
 _HEARTBEAT_MAX_BYTES = 4096
 _INSTANCE_ID_PATTERN = r"^[a-zA-Z0-9._-]{1,63}$"
@@ -2895,6 +2908,24 @@ def _heartbeat_signing_message(payload: ScreenerHeartbeatRequest) -> bytes:
     ).encode()
 
 
+async def _screening_attempt_lifetime_cap(
+    session: AsyncSession, attempt: ScreeningAttempt
+) -> timedelta:
+    """Return how long renewals may keep one attempt alive after its claim."""
+    if attempt.review_settings_revision is None:
+        return _UNBOUND_SCREENING_LIFETIME_CAP
+    revision = await session.get(
+        ScreenerReviewSettingsRevision, attempt.review_settings_revision
+    )
+    if revision is None:
+        return _UNBOUND_SCREENING_LIFETIME_CAP
+    settings = ScreenerReviewSettings.model_validate(revision.settings)
+    review_seconds = settings.source_review_timeout_seconds + settings.timeout_seconds
+    if settings.adjudicator_mode != "off":
+        review_seconds += settings.adjudicator_timeout_seconds
+    return timedelta(seconds=review_seconds) + _SCREENING_NON_REVIEW_ALLOWANCE
+
+
 @router.post(
     "/heartbeat",
     response_model=ScreenerHeartbeatResponse,
@@ -3022,14 +3053,19 @@ async def heartbeat(
             if isinstance(current_stage, str)
             else None
         )
-        progress_advanced = (
-            previous_heartbeat is None
-            or previous_active_agent_id != request_body.active_agent_id
-            or previous_started_at != current_started_at
-            or (
-                previous_stage_rank is not None
-                and current_stage_rank is not None
-                and current_stage_rank > previous_stage_rank
+        # A job continues the previous row only while it screens the same
+        # agent; the first heartbeat after a claim starts a new job.
+        same_job = (
+            previous_heartbeat is not None
+            and previous_active_agent_id == request_body.active_agent_id
+        )
+        stage_regressed = (
+            previous_stage_rank is not None
+            and current_stage_rank is not None
+            and current_stage_rank < previous_stage_rank
+            and not (
+                previous_stage in _SOURCE_REVIEW_PROGRESS_STAGES
+                and current_stage in _POST_PREFLIGHT_PROGRESS_STAGES
             )
         )
         row, accepted = await upsert_screener_heartbeat(
@@ -3080,7 +3116,6 @@ async def heartbeat(
         )
         if (
             accepted
-            and progress_advanced
             and request_body.state == "screening"
             and request_body.active_agent_id is not None
             and request_body.progress is not None
@@ -3097,9 +3132,53 @@ async def heartbeat(
                 .with_for_update()
                 .limit(1)
             )
-            if attempt is not None:
-                renewed_lease_deadline = now + _RENEWABLE_SCREENING_LEASE_TTL
-                attempt.deadline = renewed_lease_deadline
+            refusal: str | None = None
+            if attempt is None:
+                refusal = "no-running-attempt"
+            elif attempt.review_settings_instance_id not in (None, instance_id):
+                refusal = "instance-mismatch"
+            elif same_job and previous_started_at != current_started_at:
+                refusal = "started-at-changed"
+            elif same_job and stage_regressed:
+                refusal = "stage-regressed"
+            else:
+                attempt_started_at = attempt.started_at
+                if attempt_started_at.tzinfo is None:
+                    attempt_started_at = attempt_started_at.replace(tzinfo=UTC)
+                current_deadline = attempt.deadline
+                if current_deadline.tzinfo is None:
+                    current_deadline = current_deadline.replace(tzinfo=UTC)
+                cap_deadline = attempt_started_at + (
+                    await _screening_attempt_lifetime_cap(session, attempt)
+                )
+                new_deadline = min(now + _RENEWABLE_SCREENING_LEASE_TTL, cap_deadline)
+                # Never shorten a lease: a legacy claim already runs further
+                # ahead than one renewal would.
+                if cap_deadline <= current_deadline:
+                    refusal = "capped"
+                elif new_deadline > current_deadline:
+                    renewed_lease_deadline = new_deadline
+                    attempt.deadline = new_deadline
+                    logger.info(
+                        "renewed screening lease agent_id=%s attempt_id=%s "
+                        "instance_id=%s stage=%s deadline=%s",
+                        request_body.active_agent_id,
+                        attempt.attempt_id,
+                        instance_id,
+                        current_stage,
+                        new_deadline.isoformat(),
+                    )
+            if refusal is not None:
+                logger.warning(
+                    "refused screening lease renewal reason=%s agent_id=%s "
+                    "attempt_id=%s instance_id=%s stage=%s deadline=%s",
+                    refusal,
+                    request_body.active_agent_id,
+                    attempt.attempt_id if attempt is not None else None,
+                    instance_id,
+                    current_stage,
+                    attempt.deadline.isoformat() if attempt is not None else None,
+                )
         # Reap heartbeats from long-gone instances (scaled-in fleet workers)
         # so the per-instance list stays bounded. Cheap indexed delete.
         await prune_stale_screener_heartbeats(
