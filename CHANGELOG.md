@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.324.0 (2026-09-28)
+
+### Features
+
+- **platform**: Pin terminal-review emission eligibility
+  ([#2507](https://github.com/ditto-assistant/ditto-subnet/pull/2507),
+  [`b6fcb9f`](https://github.com/ditto-assistant/ditto-subnet/commit/b6fcb9f706f6b3f3ecd67528fa3a6a1859812870))
+
+
 ## v0.323.1 (2026-09-28)
 
 ### Bug Fixes
