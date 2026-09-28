@@ -2,6 +2,41 @@
 
 <!-- version list -->
 
+## v0.322.0 (2026-09-28)
+
+### Bug Fixes
+
+- **infra**: Discover managed GCP zones and guard empty groups
+  ([#2408](https://github.com/ditto-assistant/ditto-subnet/pull/2408),
+  [`d11fc1d`](https://github.com/ditto-assistant/ditto-subnet/commit/d11fc1d38747ea4257f8b4161cbd8943ceff682c))
+
+- **infra**: Make screener role safe in check mode
+  ([#2410](https://github.com/ditto-assistant/ditto-subnet/pull/2410),
+  [`b5f8248`](https://github.com/ditto-assistant/ditto-subnet/commit/b5f8248fb9d632b5c53c591db7ec45beb096dc9e))
+
+- **infra**: Stage screener checkout migrations
+  ([#2407](https://github.com/ditto-assistant/ditto-subnet/pull/2407),
+  [`a4ddd48`](https://github.com/ditto-assistant/ditto-subnet/commit/a4ddd487d38aa8a5e35a9979efbc68b8d1b80fd1))
+
+### Chores
+
+- **tests**: Guard capacity controller IAM scope
+  ([#2406](https://github.com/ditto-assistant/ditto-subnet/pull/2406),
+  [`7ff76b0`](https://github.com/ditto-assistant/ditto-subnet/commit/7ff76b0f35d9dc7bb2959adeadd77e12ddd23b10))
+
+### Documentation
+
+- **platform**: Publish inference request field contract
+  ([#2409](https://github.com/ditto-assistant/ditto-subnet/pull/2409),
+  [`65abff9`](https://github.com/ditto-assistant/ditto-subnet/commit/65abff962261c249556543489c4609cb3ba6bcb6))
+
+### Features
+
+- **platform**: Add validator capacity telemetry
+  ([#2414](https://github.com/ditto-assistant/ditto-subnet/pull/2414),
+  [`18ae969`](https://github.com/ditto-assistant/ditto-subnet/commit/18ae96951b0f657f6fabbaf67009addd62b8e55f))
+
+
 ## v0.321.10 (2026-09-28)
 
 ### Bug Fixes
