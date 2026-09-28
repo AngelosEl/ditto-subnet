@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.323.1 (2026-09-28)
+
+### Bug Fixes
+
+- **screener**: Retain l2 usage on provider errors
+  ([#2509](https://github.com/ditto-assistant/ditto-subnet/pull/2509),
+  [`50c2b8d`](https://github.com/ditto-assistant/ditto-subnet/commit/50c2b8d77b3245b405fcc3495f289ce30391aae3))
+
+
 ## v0.323.0 (2026-09-28)
 
 ### Bug Fixes
