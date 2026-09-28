@@ -4779,15 +4779,10 @@ def _validator_heartbeats_response(
     )
 
 
-@router.get("/validators", response_model=PublicValidatorHeartbeatsResponse)
-async def validators(
-    request: Request,
-    response: Response,
-    session: SessionDep,
+async def load_validator_fleet(
+    session: AsyncSession, app_state: Any, *, now: datetime
 ) -> PublicValidatorHeartbeatsResponse:
     """Signed reports reconciled with the platform's current assignment truth."""
-    response.headers["Cache-Control"] = _CACHE_CONTROL
-    now = datetime.now(UTC)
     assignments = await list_active_validator_assignments(session, now=now)
     return _validator_heartbeats_response(
         rows=await list_validator_heartbeats(session),
@@ -4801,8 +4796,19 @@ async def validators(
         ),
         now=now,
         active_bench_version=await active_bench_version(session),
-        slot_settings=await resolve_slot_settings(request.app.state),
+        slot_settings=await resolve_slot_settings(app_state),
     )
+
+
+@router.get("/validators", response_model=PublicValidatorHeartbeatsResponse)
+async def validators(
+    request: Request,
+    response: Response,
+    session: SessionDep,
+) -> PublicValidatorHeartbeatsResponse:
+    """Signed reports reconciled with the platform's current assignment truth."""
+    response.headers["Cache-Control"] = _CACHE_CONTROL
+    return await load_validator_fleet(session, request.app.state, now=datetime.now(UTC))
 
 
 @router.get("/validator-names", response_model=PublicValidatorNamesResponse)

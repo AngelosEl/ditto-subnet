@@ -3844,6 +3844,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/admin/validator-capacity": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Validator Capacity
+         * @description Serviceable vs claimed slots, assignment progress, queue age, relay load.
+         */
+        get: operations["get_validator_capacity_api_v1_admin_validator_capacity_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/admin/validator-slot-settings": {
         parameters: {
             query?: never;
@@ -27732,6 +27752,26 @@ export interface components {
             stage: "request" | "provider";
         };
         /**
+         * RelayLaneSaturation
+         * @description Live hosted-inference load on one lane against its global ceiling.
+         */
+        RelayLaneSaturation: {
+            /** Active Requests */
+            active_requests: number;
+            /** Global Limit */
+            global_limit: number;
+            /**
+             * Request Kind
+             * @enum {string}
+             */
+            request_kind: "chat" | "embedding";
+            /**
+             * Saturation
+             * @description `active_requests / global_limit`.
+             */
+            saturation: number;
+        };
+        /**
          * RelayRecoveryTelemetryView
          * @description Ticket-level abort evidence retained by the benchmark control plane.
          */
@@ -33604,6 +33644,144 @@ export interface components {
              * @default false
              */
             ticket_inference: boolean;
+        };
+        /**
+         * ValidatorCapacityAssignment
+         * @description One live ordinary lease with the progress its validator last signed.
+         */
+        ValidatorCapacityAssignment: {
+            /** Age Seconds */
+            age_seconds: number;
+            /**
+             * Agent Id
+             * Format: uuid
+             */
+            agent_id: string;
+            /** Agent Name */
+            agent_name: string;
+            /** Bench Version */
+            bench_version: number;
+            /**
+             * Checks Per Minute
+             * @description Estimate: completed checks divided by the minutes from ticket issue to the validator's latest heartbeat. Pre-run stages count against it, so it understates a run's steady rate. Null until at least one check has completed.
+             */
+            checks_per_minute: number | null;
+            /** Completed Checks */
+            completed_checks: number | null;
+            /**
+             * Estimated Remaining Slot Minutes
+             * @description Estimate: remaining checks of the current run at `checks_per_minute`, as of the latest heartbeat. Null whenever the rate is unknown; never a guess.
+             */
+            estimated_remaining_slot_minutes: number | null;
+            purpose: components["schemas"]["TicketPurpose"];
+            /** Slot Id */
+            slot_id: string;
+            /** Stage */
+            stage: ("preparing" | "building_harness" | "generating_dataset" | "starting_harness" | "running_benchmark" | "waiting_for_relay" | "finalizing" | "submitting_result" | "failed_retrying") | null;
+            /** Stalled */
+            stalled: boolean;
+            /**
+             * Started At
+             * Format: date-time
+             * @description When the validator ticket was issued (UTC).
+             */
+            started_at: string;
+            /** Total Checks */
+            total_checks: number | null;
+        };
+        /**
+         * ValidatorCapacityEntry
+         * @description One live validator's ordinary slot capacity and live assignments.
+         */
+        ValidatorCapacityEntry: {
+            /**
+             * Admission
+             * @enum {string}
+             */
+            admission: "accepting" | "draining" | "paused" | "resource_constrained";
+            /** Assignments */
+            assignments: components["schemas"]["ValidatorCapacityAssignment"][];
+            /**
+             * Bench Serviceability
+             * @enum {string}
+             */
+            bench_serviceability: "serving" | "scorer_unverified" | "software_obsolete";
+            /**
+             * Claimed Slots
+             * @description Distinct ordinary slots that are not free: a live lease, signed heartbeat occupancy, or an evicted lease whose container may still be running. Confirmation (longmem) slots are excluded.
+             */
+            claimed_slots: number;
+            /** Configured Slots */
+            configured_slots: number;
+            /** Issuance Paused */
+            issuance_paused: boolean;
+            /**
+             * Seen At
+             * Format: date-time
+             */
+            seen_at: string;
+            /**
+             * Serviceable Slots
+             * @description Healthy slots dispatch will fund right now: the fleet view's `allowed_slots` narrowed to `healthy_slots`, and zero unless the validator can serve the active benchmark.
+             */
+            serviceable_slots: number;
+            /** Validator Hotkey */
+            validator_hotkey: string;
+        };
+        /**
+         * ValidatorCapacitySummary
+         * @description Bounded fleet capacity summary built from existing heartbeat truth.
+         *
+         *     Only validators whose heartbeat is inside the fleet view's online window
+         *     are counted. Totals cover every live validator; ``validators`` is capped
+         *     and ``validators_truncated`` says when rows were dropped from it.
+         */
+        ValidatorCapacitySummary: {
+            /** Active Assignment Count */
+            active_assignment_count: number;
+            /** Active Bench Version */
+            active_bench_version: number;
+            /** Claimed Slots */
+            claimed_slots: number;
+            /**
+             * Eligible Unleased Count
+             * @description Active-era submissions passing the fleet-wide queue filter with quorum slots left and no live lease. Owner serialization and per-validator exclusions are not applied, so this is an upper bound on leasable work.
+             */
+            eligible_unleased_count: number;
+            /**
+             * Estimated Remaining Slot Minutes
+             * @description Estimate: sum of every assignment's known `estimated_remaining_slot_minutes`. Assignments without a rate are counted in `unestimated_assignment_count`, not here.
+             */
+            estimated_remaining_slot_minutes: number;
+            /**
+             * Generated At
+             * Format: date-time
+             */
+            generated_at: string;
+            /** Live Validator Count */
+            live_validator_count: number;
+            /**
+             * Oldest Eligible Unleased Age Seconds
+             * @description Queue age of the oldest of those submissions on the allocator's FIFO clock (arrival clamped to the era start). Null when none wait.
+             */
+            oldest_eligible_unleased_age_seconds?: number | null;
+            /** Online Window Seconds */
+            online_window_seconds: number;
+            /** Relay */
+            relay: components["schemas"]["RelayLaneSaturation"][];
+            /** Serviceable Slots */
+            serviceable_slots: number;
+            /**
+             * Serviceable Validator Count
+             * @description Live validators with at least one serviceable slot.
+             */
+            serviceable_validator_count: number;
+            /** Unestimated Assignment Count */
+            unestimated_assignment_count: number;
+            /** Validators */
+            validators: components["schemas"]["ValidatorCapacityEntry"][];
+            /** Validators Truncated */
+            validators_truncated: boolean;
         };
         /**
          * ValidatorComponentHealth
@@ -41820,6 +41998,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AdminValidatorAssignmentReleaseResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_validator_capacity_api_v1_admin_validator_capacity_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ValidatorCapacitySummary"];
                 };
             };
             /** @description Validation Error */
