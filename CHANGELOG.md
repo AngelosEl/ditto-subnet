@@ -2,6 +2,25 @@
 
 <!-- version list -->
 
+## v0.321.9 (2026-09-28)
+
+### Bug Fixes
+
+- **screener**: Preserve zero admission through failover
+  ([#2483](https://github.com/ditto-assistant/ditto-subnet/pull/2483),
+  [`1427d6b`](https://github.com/ditto-assistant/ditto-subnet/commit/1427d6b59944503280f8a820187753849a11a5f4))
+
+- **starter**: Preserve wire prompt and model tool calls
+  ([#2503](https://github.com/ditto-assistant/ditto-subnet/pull/2503),
+  [`5c295fb`](https://github.com/ditto-assistant/ditto-subnet/commit/5c295fb7139baa40d958c237be6b5b10acb11724))
+
+### Chores
+
+- **tests**: Prove zero admission blocks infrastructure retries
+  ([#2485](https://github.com/ditto-assistant/ditto-subnet/pull/2485),
+  [`027b419`](https://github.com/ditto-assistant/ditto-subnet/commit/027b419215a567452dfa09460bbba966f4063860))
+
+
 ## v0.321.8 (2026-09-28)
 
 ### Bug Fixes
