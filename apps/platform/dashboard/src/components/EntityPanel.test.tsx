@@ -34,10 +34,10 @@ afterEach(() => {
   document.body.classList.remove("entity-page");
 });
 
-function renderPanel(names: Record<string, string> = {}): void {
+function renderPanel(names: Record<string, string> = {}, rows: typeof entries = entries): void {
   render(() => (
     <EntityPanel
-      entries={() => entries}
+      entries={() => rows}
       operations={() => operations}
       validatorNames={() => names}
       currentBench={() => 7}
@@ -130,6 +130,31 @@ describe("EntityPanel miner tenant", () => {
     );
     // Focus lands on the close control for keyboard/AT users.
     expect(document.activeElement).toBe(document.getElementById("modal-close"));
+  });
+
+  it("labels an unranked provisional run instead of printing a null rank", () => {
+    // Ineligible rows (e.g. a smoke run below the case floor) get rank null.
+    const base = leaderboard.entries?.[0];
+    if (!base) throw new Error("fixture has no leaderboard entries");
+    const hotkey = "5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty";
+    const rows = rankEntries([
+      ...(leaderboard.entries ?? []),
+      {
+        ...base,
+        agent_id: "00000000-0000-4000-8000-00000000abcd",
+        miner_hotkey: hotkey,
+        finalized: false,
+        eligible: false,
+        n: 12,
+        score_count: 1,
+        score_quorum: 3,
+      },
+    ]);
+    renderPanel({}, rows);
+    visit("/#/overview?miner=" + hotkey);
+    const chip = document.getElementById("d-bench")?.textContent ?? "";
+    expect(chip).toBe("Unranked · 1 of 3 scores");
+    expect(chip).not.toContain("null");
   });
 
   it("summarizes the standing and links the full page and the best submission", () => {

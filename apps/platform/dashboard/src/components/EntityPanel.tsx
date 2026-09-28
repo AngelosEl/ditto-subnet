@@ -775,9 +775,19 @@ export function EntityPanel(props: EntityPanelProps): JSX.Element {
  * leads when held. */
 function minerStandingChip(e: RankedEntry): { text: string; class: string; title: string } {
   if (!isFinalized(e)) {
+    const scores = (e.score_count || 0) + " of " + (e.score_quorum || 3) + " scores";
+    // rankEntries gives ineligible rows no rank (a smoke run below the case
+    // floor, a shadow run): say so rather than print "Pnull".
+    if (e.rank == null) {
+      return {
+        text: "Unranked · " + scores,
+        class: "prev",
+        title:
+          "Provisional and not rank-eligible: shown for transparency, but this run will not rank.",
+      };
+    }
     return {
-      text:
-        "P" + e.rank + " · " + (e.score_count || 0) + " of " + (e.score_quorum || 3) + " scores",
+      text: "P" + e.rank + " · " + scores,
       class: "prev",
       title:
         "Provisional: accepted score feedback so far. The rank is final at " +
