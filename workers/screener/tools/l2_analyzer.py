@@ -25,6 +25,7 @@ MAX_FILE_BYTES = 2 * 1024 * 1024
 MAX_DIGEST_BYTES = 20 * 1024 * 1024
 MAX_OUTPUT = 256_000
 MAX_INTEGRITY_HITS_PER_SURFACE = 32
+STARTER_MODEL = "fixtures/models/cross-encoder.onnx"
 INTEGRITY_SURFACES = {
     "service_entry": re.compile(
         r"(?:/run|/seed|process_run|do_post|route\s*\(|router|handler|serve)", re.I
@@ -210,13 +211,20 @@ def search(request: dict[str, object]) -> object:
         raise ValueError("prefix is invalid")
     hits = []
     omitted: list[dict[str, object]] = []
+    nontext: list[dict[str, object]] = []
+    starter_models = _starter_model_digests()
     needle = query.casefold()
     files, workspace_truncated = _files_with_truncation()
     for path in files:
         relative = _relative(path)
         if prefix and not relative.startswith(prefix):
             continue
-        if path.stat().st_size > MAX_FILE_BYTES:
+        size = path.stat().st_size
+        if size > MAX_FILE_BYTES:
+            model = _starter_model(path, relative, size, starter_models)
+            if model is not None:
+                nontext.append(model)
+                continue
             omitted.append({"path": relative, "reason": "read_cap"})
             continue
         try:
@@ -231,12 +239,16 @@ def search(request: dict[str, object]) -> object:
                         "hits": hits,
                         "omitted": omitted[:32],
                         "omitted_count": len(omitted),
+                        "nontext": nontext,
+                        "nontext_count": len(nontext),
                         "truncated": True,
                     }
     return {
         "hits": hits,
         "omitted": omitted[:32],
         "omitted_count": len(omitted),
+        "nontext": nontext,
+        "nontext_count": len(nontext),
         "truncated": workspace_truncated or bool(omitted),
     }
 
@@ -254,6 +266,38 @@ def _starter_manifests() -> list[dict[str, object]]:
     if not manifests:
         raise ValueError("no starter manifests are installed")
     return manifests
+
+
+def _starter_model_digests() -> set[str]:
+    try:
+        return {
+            str(manifest["files"][STARTER_MODEL])
+            for manifest in _starter_manifests()
+            if isinstance(manifest.get("files"), dict)
+            and STARTER_MODEL in manifest["files"]
+        }
+    except (OSError, ValueError):
+        return set()
+
+
+def _starter_model(
+    path: Path, relative: str, size: int, digests: set[str]
+) -> dict[str, object] | None:
+    """Account for an over-cap file only as the exact published starter model."""
+    if relative != STARTER_MODEL or size > MAX_DIGEST_BYTES:
+        return None
+    try:
+        digest = _file_sha256(path)
+    except OSError:
+        return None
+    if digest not in digests:
+        return None
+    return {
+        "path": relative,
+        "bytes": size,
+        "sha256": digest,
+        "provenance": "starter_manifest_digest",
+    }
 
 
 def _workspace_digests() -> tuple[dict[str, str], list[dict[str, object]], bool]:
@@ -389,37 +433,15 @@ def integrity_surfaces(_: dict[str, object]) -> object:
     files, workspace_truncated = _files_with_truncation()
     omitted: list[dict[str, object]] = []
     nontext: list[dict[str, object]] = []
-    try:
-        starter_models = {
-            str(manifest["files"]["fixtures/models/cross-encoder.onnx"])
-            for manifest in _starter_manifests()
-            if isinstance(manifest.get("files"), dict)
-            and "fixtures/models/cross-encoder.onnx" in manifest["files"]
-        }
-    except (OSError, ValueError):
-        starter_models = set()
+    starter_models = _starter_model_digests()
     for path in files:
         relative = _relative(path)
         size = path.stat().st_size
         if size > MAX_FILE_BYTES:
-            if (
-                size <= MAX_DIGEST_BYTES
-                and relative == "fixtures/models/cross-encoder.onnx"
-            ):
-                try:
-                    digest = _file_sha256(path)
-                except OSError:
-                    digest = None
-                if digest in starter_models:
-                    nontext.append(
-                        {
-                            "path": relative,
-                            "bytes": size,
-                            "sha256": digest,
-                            "provenance": "starter_manifest_digest",
-                        }
-                    )
-                    continue
+            model = _starter_model(path, relative, size, starter_models)
+            if model is not None:
+                nontext.append(model)
+                continue
             omitted.append(
                 {
                     "path": relative,

@@ -6382,6 +6382,60 @@ async def test_integrity_scan_keeps_large_text_incomplete(tmp_path: Path) -> Non
     assert result["nontext_count"] == 0
 
 
+async def test_stock_kit_dossier_analyzers_are_complete() -> None:
+    starter = ROOT.parent.parent / "miners/dittobench-starter-kit"
+    harness = InProcessAnalyzerHarness()
+    for command in l2_review._DOSSIER_ANALYZERS:
+        output = await harness.run(starter, command, {})
+        assert not l2_review._contains_truncation(json.loads(output)), command
+
+
+async def test_search_accepts_exact_starter_model_on_stock_kit() -> None:
+    starter = ROOT.parent.parent / "miners/dittobench-starter-kit"
+    payload = (starter / "fixtures/models/cross-encoder.onnx").read_bytes()
+    output = await InProcessAnalyzerHarness().run(
+        starter, "search", {"query": "reranker"}
+    )
+    assert not l2_review._analysis_requires_correction(output)
+    result = json.loads(output)
+    assert 0 < len(result["hits"]) < 120
+    assert result["truncated"] is False
+    assert result["omitted_count"] == 0
+    assert result["nontext"] == [
+        {
+            "path": "fixtures/models/cross-encoder.onnx",
+            "bytes": len(payload),
+            "sha256": hashlib.sha256(payload).hexdigest(),
+            "provenance": "starter_manifest_digest",
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    ("path", "head"),
+    [
+        ("model.onnx", b"\x00"),
+        ("fixtures/models/cross-encoder.onnx", b"\x00model_answer"),
+        ("agent.py", b"model_answer\n\x00"),
+        ("agent.py", b"model_answer\n"),
+    ],
+)
+async def test_search_keeps_unproven_large_file_incomplete(
+    tmp_path: Path, path: str, head: bytes
+) -> None:
+    target = tmp_path / path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(head + b"x" * (2 * 1024 * 1024))
+    result = json.loads(
+        await InProcessAnalyzerHarness().run(
+            tmp_path, "search", {"query": "model_answer"}
+        )
+    )
+    assert result["truncated"] is True
+    assert result["omitted"] == [{"path": path, "reason": "read_cap"}]
+    assert result["nontext_count"] == 0
+
+
 @pytest.mark.integration
 async def test_real_analyzer_container_isolated_and_canonical_starter_clean(
     tmp_path: Path,
