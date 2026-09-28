@@ -124,6 +124,19 @@ def ledger_digest(entries_json: list[dict], served_context: dict[str, Any]) -> s
     return hashlib.sha256(payload.encode()).hexdigest()
 
 
+def pin_provisional_incumbent(served: dict[str, Any]) -> LedgerEntry | None:
+    """The crown-only incumbent a pin froze (protocol 28), or ``None``.
+
+    Keyed into ``served`` only when present, so it is part of the digest and
+    every pin without one keeps its digest. Only meaningful under ``crown_mode:
+    incumbent``, the only posture that ever stores one.
+    """
+    item = served.get("provisional_incumbent")
+    if item is None or served.get("crown_mode") != "incumbent":
+        return None
+    return LedgerEntry.model_validate(item)
+
+
 def response_from_pin(pin: LedgerPin, *, stale: bool, now: datetime) -> LedgerResponse:
     """Replay a pin onto the validator wire exactly as it was frozen.
 
@@ -140,6 +153,9 @@ def response_from_pin(pin: LedgerPin, *, stale: bool, now: datetime) -> LedgerRe
         entries=list(pin.entries),
         active_bench_version=pin.bench_version,
         v9_confirmation_mode=served.get("v9_confirmation_mode"),
+        # Frozen with the pin like every other marker: a posture flip after the
+        # pin was taken lands at the next pin, for the whole fleet at once.
+        reward_eligibility_mode=served.get("reward_eligibility_mode"),
         tie_weighting_mode=served.get("tie_weighting_mode"),
         dethrone_band_mode=served.get("dethrone_band_mode"),
         count=len(pin.entries),
@@ -157,6 +173,7 @@ def response_from_pin(pin: LedgerPin, *, stale: bool, now: datetime) -> LedgerRe
         crown_incumbent_agent_id=(
             pin.incumbent_agent_id if served.get("crown_mode") == "incumbent" else None
         ),
+        provisional_incumbent=pin_provisional_incumbent(served),
         # Bench v13+ finalized-block anchors are chain facts frozen with the
         # pin; a pin taken before any reign was anchored carries none.
         confirmation_seed_anchors=[
@@ -178,6 +195,10 @@ def pin_expected_shares(pin: Any) -> dict[str, float] | None:
     frozen markers -- the same projection the validator fold produces -- and
     returns each recipient's share of the miner pool. ``None`` when the pin
     carries no positive pool.
+
+    A provisional incumbent folds like any entry but is never paid, so its
+    shares are left out and the result sums below one: the remainder is what
+    the validator burns (protocol 28).
     """
     from ditto.api_server.koth import emission_allocation
 
@@ -186,7 +207,10 @@ def pin_expected_shares(pin: Any) -> dict[str, float] | None:
     served = (
         context.get("served", {}) if isinstance(context.get("served"), dict) else {}
     )
-    fold_entries = koth_entries_from_ledger(entries)
+    provisional = pin_provisional_incumbent(served)
+    fold_entries = koth_entries_from_ledger(
+        [*entries, provisional] if provisional is not None else entries
+    )
     tie_pooling = served.get("tie_weighting_mode") == "pool"
     clamp = served.get("dethrone_band_mode") == "headroom_capped"
     projection = project_koth(
@@ -207,10 +231,24 @@ def pin_expected_shares(pin: Any) -> dict[str, float] | None:
         return None
     shares: dict[str, float] = {}
     for member, share in zip(allocation.members, allocation.shares, strict=True):
+        if provisional is not None and member.agent_id == provisional.agent_id:
+            continue
         shares[member.miner_hotkey] = (
             shares.get(member.miner_hotkey, 0.0) + share / total
         )
     return shares
+
+
+def pin_expected_burn(burn_share: float, expected: dict[str, float] | None) -> float:
+    """The owner-burn fraction a pin's fold puts on chain.
+
+    ``burn_share`` of the vector, plus -- under a provisional incumbent
+    (protocol 28) -- every miner-pool share the pin leaves unpaid, which
+    :func:`pin_expected_shares` reports as paid shares summing below one. For
+    any other pin the paid shares sum to one and this is ``burn_share``.
+    """
+    paid = sum(expected.values()) if expected else 1.0
+    return 1.0 - (1.0 - burn_share) * paid
 
 
 def classify_vector_against_pins(
@@ -242,7 +280,13 @@ def classify_vector_against_pins(
     def matches(expected: dict[str, float]) -> bool:
         if set(expected) != set(actual):
             return False
-        return all(abs(actual[h] - expected[h]) <= tolerance for h in expected)
+        # A provisional incumbent's unpaid share burns too, so its pin
+        # prescribes paid shares summing below one; compare their ratios. Any
+        # unpaid slot is at least one rank share, far above ``tolerance``, so an
+        # ordinary pin is compared exactly as before.
+        paid = sum(expected.values())
+        scale = paid if 1.0 - paid > tolerance else 1.0
+        return all(abs(actual[h] - expected[h] / scale) <= tolerance for h in expected)
 
     if matches(expected_current):
         return "current"
@@ -454,6 +498,11 @@ def build_pin_draft(
     # validator re-deriving the champion-anchored family from a pin sees the
     # same binding a live read would have served. Keyed only when present, so
     # every pin below the binding floor keeps its pre-v13 digest.
+    # Keyed only when the gate is enforcing, so every pin taken with the gate
+    # off or in shadow keeps its pre-#2041 digest byte for byte.
+    reward_eligibility_mode = getattr(snapshot, "reward_eligibility_mode", None)
+    if reward_eligibility_mode is not None:
+        served["reward_eligibility_mode"] = reward_eligibility_mode
     seed_anchors = getattr(snapshot, "confirmation_seed_anchors", None) or ()
     if seed_anchors:
         served["confirmation_seed_anchors"] = [
@@ -481,8 +530,34 @@ def build_pin_draft(
             ),
             None,
         )
+    # Protocol 28: an incumbent whose owner has no payable generation, only a
+    # withheld one, keeps the crown as a provisional incumbent. Only its owner's
+    # best withheld generation qualifies, and only while the gate is enforcing
+    # -- which is only ever served to a protocol-28 fleet.
+    provisional = None
+    if (
+        incumbent is None
+        and previous_champion_owner_root is not None
+        and snapshot.crown_mode == "incumbent"
+        and reward_eligibility_mode == "enforce"
+    ):
+        provisional = next(
+            (
+                entry
+                for entry in getattr(snapshot, "withheld_entries", None) or ()
+                if owner_roots.get(entry.agent_id) == previous_champion_owner_root
+            ),
+            None,
+        )
+    if provisional is not None:
+        incumbent = provisional.agent_id
+        served["provisional_incumbent"] = canonical_entries([provisional])[0]
     projection = project_koth(
-        koth_entries_from_ledger(list(snapshot.entries)),
+        koth_entries_from_ledger(
+            [*snapshot.entries, provisional]
+            if provisional is not None
+            else list(snapshot.entries)
+        ),
         distinct_hotkeys=snapshot.tie_weighting_mode == "pool",
         ceiling_band_clamp=snapshot.dethrone_band_mode == "headroom_capped",
         incumbent_agent_id=(incumbent if snapshot.crown_mode == "incumbent" else None),
@@ -500,6 +575,17 @@ def build_pin_draft(
             "block_timestamp": schedule.block_timestamp,
         },
     }
+    records = getattr(snapshot, "reward_eligibility_records", None)
+    if records is not None:
+        # Explanations are frozen with the pool, but do not alter the fold
+        # digest: validators consume only entries and the served markers.
+        context["reward_eligibility_records"] = [
+            record.model_dump(mode="json")
+            for _, record in sorted(records.items(), key=lambda item: str(item[0]))
+        ]
+        context["reward_eligibility_enforcement"] = (
+            snapshot.reward_eligibility_enforcement
+        )
     return LedgerPinDraft(
         netuid=schedule.netuid,
         epoch_index=schedule.subnet_epoch_index,
@@ -593,7 +679,9 @@ __all__ = [
     "build_pin_draft",
     "canonical_entries",
     "classify_vector_against_pins",
+    "pin_expected_burn",
     "pin_expected_shares",
+    "pin_provisional_incumbent",
     "ledger_digest",
     "response_from_pin",
 ]

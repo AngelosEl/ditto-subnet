@@ -49,6 +49,13 @@ DEFAULT_RETEST_ELIGIBILITY_Z = 1.64
 # recently-live weight setter reports at least this.
 CROWN_INCUMBENT_PROTOCOL = 27
 
+# The first validator heartbeat protocol whose fold reads
+# ``provisional_incumbent``: a crown incumbent withheld by the terminal-review
+# emission gate keeps the crown and its shares burn. An enforcing gate filters
+# the pool only once every recently-live weight setter reports at least this;
+# an older validator would crown and pay the runner-up instead.
+PROVISIONAL_INCUMBENT_PROTOCOL = 28
+
 
 class LedgerPinStatus(BaseModel):
     """Identity of the epoch-pinned ledger currently served to validators."""

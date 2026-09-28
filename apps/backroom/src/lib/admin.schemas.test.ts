@@ -5,6 +5,7 @@ import type { input as ZodInput, output as ZodOutput } from 'zod'
 import type { components as PlatformComponents } from '../generated/platform-api'
 import {
   SCREENING_SUBMISSION_AGENT_STATUSES,
+  emissionEligibilityControlSchema,
   auditReasonSchema,
   baselineDiffManifestSchema,
   sourceDiffManifestSchema,
@@ -4895,6 +4896,54 @@ describe('diff manifest omission fields (issue #480)', () => {
     expect(sourceDiffManifestSchema.parse(sourceManifest)).toMatchObject({
       omitted_file_count: 0,
       omitted_paths: [],
+    })
+  })
+})
+
+describe('emission eligibility policy schema', () => {
+  const settings = {
+    enforcement: 'enforce',
+    require_terminal_review: true,
+    exclude_inconclusive: true,
+    exclude_infrastructure_failed: true,
+    exclude_escalated: true,
+    require_completed_review: false,
+    clearance_activation: 'next_window',
+    activation_window_seconds: 3600,
+  }
+  const control = (effective: Record<string, unknown>) => ({
+    current: null,
+    history: [],
+    default: { ...settings, enforcement: 'off' },
+    effective: {
+      revision: 1,
+      scope: '*',
+      settings,
+      checksum: 'ab'.repeat(32),
+      source: 'revision',
+      max_age_seconds: 5,
+      default: { ...settings, enforcement: 'off' },
+      current_window_start: '2026-09-27T12:00:00Z',
+      next_window_start: '2026-09-27T13:00:00Z',
+      ...effective,
+    },
+    confirmation_phrase: 'APPLY EMISSION ELIGIBILITY',
+    recent_shadow_records: [],
+  })
+
+  it('shows enforce rehearsing as shadow until the fleet folds protocol 28', () => {
+    const parsed = emissionEligibilityControlSchema.parse(
+      control({
+        effective_enforcement: 'shadow',
+        fleet_protocol_ready: false,
+        required_protocol: 28,
+      }),
+    )
+    expect(parsed.effective.settings.enforcement).toBe('enforce')
+    expect(parsed.effective).toMatchObject({
+      effective_enforcement: 'shadow',
+      fleet_protocol_ready: false,
+      required_protocol: 28,
     })
   })
 })

@@ -40,7 +40,7 @@ def _digest(value):
     ).hexdigest()
 
 
-async def _setup(app, maker):
+async def _setup(app, maker, *, provisional_crown_mode=None):
     async def db():
         async with maker() as session:
             yield session
@@ -78,7 +78,18 @@ async def _setup(app, maker):
             "bench_version": 13,
         }
     ]
-    pin_digest = ledger_digest(entries, {"burn_share": 0.1})
+    served = {"burn_share": 0.1}
+    if provisional_crown_mode is not None:
+        # Protocol 28: the champion holds the crown as a provisional incumbent,
+        # served beside the payable entries rather than among them.
+        runner_up = {**entries[0], "agent_id": str(uuid4()), "sha256": "cd" * 32}
+        served = {
+            **served,
+            "crown_mode": provisional_crown_mode,
+            "provisional_incumbent": entries[0],
+        }
+        entries = [runner_up]
+    pin_digest = ledger_digest(entries, served)
     async with maker() as session, session.begin():
         session.add(
             LedgerEpochSnapshot(
@@ -91,7 +102,7 @@ async def _setup(app, maker):
                 pinned_at=datetime.now(UTC),
                 bench_version=13,
                 entries=entries,
-                context={"served": {"burn_share": 0.1}},
+                context={"served": served},
                 ledger_digest=pin_digest,
                 champion_agent_id=agent_id,
             )
@@ -281,6 +292,23 @@ async def test_same_hotkey_and_vector_cannot_name_another_artifact_or_pin(
             )
             == 0
         )
+
+
+async def test_a_provisional_incumbent_champion_receipt_is_recorded(
+    app, client, session_maker
+):
+    raw = await _setup(app, session_maker, provisional_crown_mode="incumbent")
+    response = await _post(client, _signed(raw))
+    assert response.status_code == 200, response.text
+
+
+async def test_a_provisional_entry_without_the_crown_marker_names_no_champion(
+    app, client, session_maker
+):
+    raw = await _setup(app, session_maker, provisional_crown_mode=False)
+    response = await _post(client, _signed(raw))
+    assert response.status_code == 409, response.text
+    assert response.json()["message"].startswith("artifact_pin_mismatch: ")
 
 
 async def test_relay_diagnostics_authenticated_latest_only(app, client, session_maker):

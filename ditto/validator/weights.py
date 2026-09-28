@@ -63,6 +63,12 @@ DEFAULT_BENCH_VERSION = 1
 # MIN_ELIGIBLE_CASES (ditto-platform ditto/db/queries/scores.py).
 MIN_ELIGIBLE_CASES = 100
 
+# Key under which :func:`compute_weights` reports every share it folded to a
+# provisional incumbent (protocol 28). Not an SS58 address, so it can never
+# collide with a miner, and :func:`split_unpaid_share` strips it before the
+# vector meets :func:`apply_miner_emission_cap`.
+UNPAID_SHARE_KEY = "<unpaid>"
+
 
 def resolve_miner_emission_share(
     ledger: LedgerResponse, *, default_share: float
@@ -315,6 +321,32 @@ def track_allocated_share(
     return allocated / BASIS_POINT_SCALE
 
 
+def split_unpaid_share(weights: Mapping[str, float]) -> tuple[dict[str, float], float]:
+    """Separate a provisional incumbent's unpaid share from a blended vector.
+
+    Returns the payable vector and the fraction of the vector's positive weight
+    that is payable. The caller scales ``miner_share`` by that fraction exactly
+    as it does for an empty track's shortfall (:func:`track_allocated_share`),
+    so the unpaid share burns through the unchanged
+    :func:`apply_miner_emission_cap` instead of being renormalized onto the
+    miners who are paid: each keeps precisely the share it would hold had the
+    incumbent been paid. Without :data:`UNPAID_SHARE_KEY` the vector comes back
+    unchanged with a fraction of exactly ``1.0``, so the cap input is
+    byte-identical to the protocol-27 pipeline.
+    """
+    if UNPAID_SHARE_KEY not in weights:
+        return dict(weights), 1.0
+    paid = {
+        hotkey: weight
+        for hotkey, weight in weights.items()
+        if hotkey != UNPAID_SHARE_KEY
+    }
+    total = math.fsum(weight for weight in weights.values() if weight > 0.0)
+    if total <= 0.0:
+        return paid, 0.0
+    return paid, math.fsum(weight for weight in paid.values() if weight > 0.0) / total
+
+
 def _entry_version(entry: LedgerEntry) -> int:
     """The entry's bench_version, or DEFAULT_BENCH_VERSION when the platform
     ledger does not carry one. Read via getattr so the wire model can stay
@@ -504,6 +536,7 @@ def compute_weights(
     tie_pooling: bool = False,
     ceiling_band_clamp: bool = False,
     incumbent_agent_id: UUID | None = None,
+    unpaid_agent_id: UUID | None = None,
 ) -> dict[str, float]:
     """Return ``{miner_hotkey: weight}`` for the KOTH+ATH mechanism.
 
@@ -557,6 +590,12 @@ def compute_weights(
     ``put_weights`` rather than zeroing the chain. Pylon/Subtensor normalizes the
     returned vector, so only the ratios matter; when there is no tail the champion
     is the whole vector.
+
+    ``unpaid_agent_id`` names a provisional incumbent (protocol 28): an entry
+    that takes part in the fold -- crown, rank, tie pooling, score-ceiling
+    cohort -- exactly like any other, but whose shares are reported under
+    :data:`UNPAID_SHARE_KEY` instead of its hotkey so the caller burns them
+    (:func:`split_unpaid_share`). ``None`` leaves the vector exactly as before.
     """
     eligible = filter_eligible(entries)
     scored = [e for e in eligible if _effective_composite(e) > 0.0]
@@ -611,7 +650,11 @@ def compute_weights(
             recipients, recipient_shares, dethrone_z=dethrone_z
         )
     weights = {
-        entry.miner_hotkey: recipient_shares[index]
+        (
+            UNPAID_SHARE_KEY
+            if entry.agent_id == unpaid_agent_id
+            else entry.miner_hotkey
+        ): recipient_shares[index]
         for index, entry in enumerate(recipients)
     }
 

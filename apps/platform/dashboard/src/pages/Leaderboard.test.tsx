@@ -1793,6 +1793,39 @@ describe("registration-aware crown clarity", () => {
   });
 });
 
+describe("provisional champion (protocol 28)", () => {
+  it("keeps the held champion crowned and never presents its share as paid", async () => {
+    renderPage({
+      patch: (name, body) => {
+        if (name !== "leaderboard") return body;
+        const payload = body as LeaderboardPayload;
+        return {
+          ...payload,
+          emissions: {
+            ...payload.emissions,
+            champion_reward_eligible: false,
+            provisional_champion: true,
+            recipients: (payload.emissions?.recipients ?? []).map((recipient) =>
+              recipient.role === "champion" ? { ...recipient, paid: false } : recipient,
+            ),
+          },
+        };
+      },
+    });
+    await waitForBoard();
+    await waitFor(() =>
+      expect(el("emissions-title").textContent).toContain(championEntry.agent_name as string),
+    );
+    expect(el("emissions-title").textContent).toContain("holds the crown provisionally");
+    expect(el("emissions-title").textContent).toContain("unpaid while its review is open");
+    expect(el("emissions-title").textContent).not.toContain("receives");
+    const championRow = Array.from(document.querySelectorAll("#rows tr[data-i]")).find((row) =>
+      row.textContent?.includes(championEntry.agent_name as string),
+    ) as HTMLElement;
+    expect(championRow.querySelector(".emission-badge.champion")?.textContent).toContain("unpaid");
+  });
+});
+
 // ── Row 1 (chip vocabulary slice): the composite cell chips ──
 describe("composite cell chips (row 1 slice)", () => {
   it("distinguishes the active seed window from legacy recorded history", async () => {

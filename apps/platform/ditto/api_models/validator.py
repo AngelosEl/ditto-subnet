@@ -2086,6 +2086,29 @@ class LedgerResponse(BaseModel):
             ),
         ),
     ] = 0.0
+    reward_eligibility_mode: Annotated[
+        Literal["enforce"] | None,
+        Field(
+            default=None,
+            exclude_if=lambda value: value is None,
+            description=(
+                "Present only while the operator's terminal-review emission gate "
+                "is enforcing (ditto-subnet #2041). When present, every entry "
+                "below has a terminal review decision for its exact artifact "
+                "digest at this benchmark version under the posture revision the "
+                "platform resolved: artifacts with an unresolved, inconclusive, "
+                "infrastructure-failed or escalated review have already been "
+                "withheld from this pool, and a clear recorded inside the current "
+                "emission window takes effect at the next one. Absent -- the "
+                "default, and what an older platform's omission means -- says the "
+                "gate is off or in shadow, in which case this ledger is exactly "
+                "what it was before the gate existed. The pool is filtered "
+                "platform-side either way, so a validator that ignores this field "
+                "folds correctly; it is served so the fold's telemetry can state "
+                "which posture produced the pool."
+            ),
+        ),
+    ] = None
     continual_retest_cohort_size: Annotated[
         int,
         Field(
@@ -2202,7 +2225,29 @@ class LedgerResponse(BaseModel):
             exclude_if=lambda value: value is None,
             description=(
                 "The incumbent the fold defends when crown_mode is incumbent; "
-                "always one of entries. Absent whenever crown_mode is absent."
+                "one of entries, or provisional_incumbent when that is served. "
+                "Absent whenever crown_mode is absent."
+            ),
+        ),
+    ] = None
+    provisional_incumbent: Annotated[
+        LedgerEntry | None,
+        Field(
+            default=None,
+            exclude_if=lambda value: value is None,
+            description=(
+                "Protocol 28. The crown incumbent when the operator's "
+                "terminal-review emission gate withholds its exact artifact: it "
+                "is deliberately NOT in entries, because it may not be paid, and "
+                "is served only on an epoch pin whose crown_mode is incumbent, "
+                "with crown_incumbent_agent_id equal to its agent_id. The fold "
+                "adds it to the pool as the incumbent, derives champion, tail, "
+                "tie pooling and the score-ceiling cohort exactly as for any "
+                "entry, then burns every share it allocated to this entry "
+                "instead of renormalizing it onto other miners: a held champion "
+                "keeps the crown and its slot goes unpaid rather than "
+                "reassigned. Absent on every other ledger, which then folds "
+                "exactly as protocol 27."
             ),
         ),
     ] = None

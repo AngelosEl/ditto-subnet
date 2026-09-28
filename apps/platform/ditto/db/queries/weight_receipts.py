@@ -72,9 +72,18 @@ async def _validate_provenance(
         raise WeightReceiptConflict(
             "ledger_pin_mismatch", "receipt does not match its immutable champion pin"
         )
+    served = pin.context.get("served", {})
+    # A provisional incumbent (protocol 28) holds the pin's crown from its served
+    # markers rather than from the payable entries; it is folded, never paid.
+    provisional = (
+        [served["provisional_incumbent"]]
+        if served.get("crown_mode") == "incumbent"
+        and served.get("provisional_incumbent")
+        else []
+    )
     entries = [
         entry
-        for entry in pin.entries
+        for entry in (*pin.entries, *provisional)
         if str(entry.get("agent_id")) == str(provenance.champion_agent_id)
     ]
     if (

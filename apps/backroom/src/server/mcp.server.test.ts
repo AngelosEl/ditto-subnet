@@ -168,6 +168,7 @@ describe('Backroom MCP tools', () => {
         'get_confirmation_bundle',
         'get_confirmation_lane_diagnosis',
         'get_efficiency_bonus_settings',
+        'get_emission_eligibility_policy',
         'get_inference_concurrency_settings',
         'get_inference_runtime_metrics',
         'get_source_review_queue_slo',
@@ -258,6 +259,7 @@ describe('Backroom MCP tools', () => {
         'issue_coding_shadow_ticket_set',
         'get_validator_weight_diagnostics',
         'get_agent_core_qualification',
+        'get_agent_emission_eligibility',
         'get_claim_provenance_cases',
         'get_agent_scores',
         'get_leaderboard',
@@ -409,8 +411,12 @@ describe('Backroom MCP tools', () => {
     // measured catalog to 171,685 bytes. The exact-key per-case
     // claim-provenance read (#1852) adds a seven-field input; measured
     // 172,734 bytes together. Keep the same ~0.5 KB headroom.
-    // The no-input validator-capacity read (#2036) measures 173,425 bytes.
-    expect(JSON.stringify(response.tools).length).toBeLessThanOrEqual(173_900)
+    // The two terminal-review eligibility reads (#2041) add a settings-history
+    // input and one uuid input; measured 174,477 bytes together.
+    // Naming the fleet-effective posture in its catalog line measures 174,513.
+    // Main also adds the no-input validator-capacity read (#2036); retain
+    // about 0.5 KB of headroom for their combined catalog.
+    expect(JSON.stringify(response.tools).length).toBeLessThanOrEqual(175_700)
     const descriptions = response.tools.map((tool) => tool.description ?? '')
     // Includes concise rollout and protected-policy controls; tutorials live
     // in get_backroom_tool_help, not here. The budget admits the screener
@@ -440,9 +446,11 @@ describe('Backroom MCP tools', () => {
       // shadow-policy descriptions bring the measured total to 29,850.
       // The taxonomy's rate_limit_bursts catalog note measured 30,520; the
       // one-line outlier-escalation dry-run read brings it to 30,794, and the
-      // claim-provenance read summary to 30,878. With the one-line
-      // validator-capacity read and later main summaries it measures 30,825.
-      31_300,
+      // claim-provenance read summary to 30,878. The two one-line
+      // terminal-review eligibility reads (#2041) measure 31,038.
+      // Naming the fleet-effective posture (protocol 28) measures 31,074;
+      // main also adds the validator-capacity summary (#2036).
+      31_500,
     )
     expect(Math.max(...descriptions.map((value) => value.length))).toBeLessThanOrEqual(600)
     expect(

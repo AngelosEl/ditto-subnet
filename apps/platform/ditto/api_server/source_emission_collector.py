@@ -16,6 +16,7 @@ from ditto.api_models.weight_receipt import FinalizedWeightReceipt
 from ditto.api_server.ledger_pin import (
     LedgerPin,
     classify_vector_against_pins,
+    pin_expected_burn,
     pin_expected_shares,
 )
 from ditto.chain.models import (
@@ -445,7 +446,11 @@ class SourceEmissionCollector:
             total = sum(weights.values())
             if (
                 total <= 0
-                or abs(weights.get(payout.owner_hotkey, 0) / total - burn) > 0.002
+                or abs(
+                    weights.get(payout.owner_hotkey, 0) / total
+                    - pin_expected_burn(burn, expected)
+                )
+                > 0.002
             ):
                 return None
         entry = next(

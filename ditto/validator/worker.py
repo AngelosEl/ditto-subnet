@@ -141,6 +141,7 @@ from ditto.validator.weights import (
     resolve_miner_emission_share,
     resolve_track_shares,
     select_champion,
+    split_unpaid_share,
     track_allocated_share,
     version_seed_planning,
 )
@@ -208,6 +209,37 @@ def _ledger_crown_incumbent(ledger: LedgerResponse) -> UUID | None:
         return None
     incumbent = getattr(ledger, "crown_incumbent_agent_id", None)
     return incumbent if isinstance(incumbent, UUID) else None
+
+
+def _ledger_provisional_incumbent(ledger: LedgerResponse) -> LedgerEntry | None:
+    """The held incumbent the fold crowns but does not pay, or ``None``.
+
+    Served only on an epoch pin under ``crown_mode: incumbent`` whose incumbent's
+    artifact the terminal-review emission gate withholds -- and only once every
+    recently-live weight setter reports protocol 28. It must be the served crown
+    incumbent and must not also be a payable entry; anything else is treated as
+    absent, so a partial or older Platform response folds exactly as protocol 27.
+    """
+    provisional = getattr(ledger, "provisional_incumbent", None)
+    incumbent = _ledger_crown_incumbent(ledger)
+    if (
+        provisional is None
+        or incumbent is None
+        or getattr(provisional, "agent_id", None) != incumbent
+        or any(entry.agent_id == incumbent for entry in ledger.entries)
+    ):
+        return None
+    return provisional
+
+
+def _ledger_weight_entries(ledger: LedgerResponse) -> list[LedgerEntry]:
+    """The pool the KOTH fold reads: payable entries plus any provisional
+    incumbent, through the same confirmation filter."""
+    provisional = _ledger_provisional_incumbent(ledger)
+    return filter_weight_confirmed(
+        [*ledger.entries, provisional] if provisional is not None else ledger.entries,
+        enforce=ledger.v9_confirmation_mode == "enforce",
+    )
 
 
 def _ledger_active_bench_version(ledger: LedgerResponse) -> int | None:
@@ -1991,10 +2023,11 @@ class ValidatorWorker:
             )
 
         leaderboard = [(e.miner_hotkey, e.composite) for e in ledger.entries]
-        weight_entries = filter_weight_confirmed(
-            ledger.entries,
-            enforce=ledger.v9_confirmation_mode == "enforce",
-        )
+        # A provisional incumbent (protocol 28) folds for the crown and every
+        # slot it occupies burns; it passes the same confirmation and
+        # registration filters as any payable entry.
+        provisional = _ledger_provisional_incumbent(ledger)
+        weight_entries = _ledger_weight_entries(ledger)
         if ledger.entries and not weight_entries:
             # A non-empty ledger containing only score contracts this layer
             # cannot yet fold is not an empty scoring pool. Preserve the last
@@ -2054,6 +2087,9 @@ class ValidatorWorker:
                 tie_pooling=ledger.tie_weighting_mode == "pool",
                 ceiling_band_clamp=_ledger_ceiling_band_clamp(ledger),
                 incumbent_agent_id=_ledger_crown_incumbent(ledger),
+                unpaid_agent_id=(
+                    provisional.agent_id if provisional is not None else None
+                ),
             ),
             router_entries=tuple(router_ledger.entries),
             router_rank_shares=self._config.router_rank_shares,
@@ -2067,7 +2103,21 @@ class ValidatorWorker:
             for track_id, vector in track_vectors.items()
             if track_id in paying_shares_bps
         }
-        miner_weights = blend_track_weights(eligible_vectors, paying_shares_bps)
+        # The provisional incumbent's shares ride through the blend under their
+        # own key, so a multi-track split normalizes them like any other weight,
+        # and are then stripped: ``paid_fraction`` scales the cap below exactly
+        # like an empty track's shortfall, so they burn. Without a provisional
+        # incumbent the vector is unchanged and ``paid_fraction`` is 1.0.
+        miner_weights, paid_fraction = split_unpaid_share(
+            blend_track_weights(eligible_vectors, paying_shares_bps)
+        )
+        if paid_fraction < 1.0:
+            logger.info(
+                "provisional incumbent %s holds the crown unpaid; %.2f%% of the "
+                "miner vector burns instead of being reassigned",
+                provisional.agent_id if provisional is not None else None,
+                (1.0 - paid_fraction) * 100.0,
+            )
         self._log_shadow_tracks(registry, track_vectors, router_ledger)
         # The burn is operator policy served on the ledger, not a compiled-in
         # constant; the config value is the fallback for a platform that does not
@@ -2100,7 +2150,7 @@ class ValidatorWorker:
             )
         weights = apply_miner_emission_cap(
             miner_weights,
-            miner_share=miner_share * allocated,
+            miner_share=miner_share * allocated * paid_fraction,
             burn_hotkey=burn_hotkey,
         )
         champion = select_champion(
@@ -2228,10 +2278,7 @@ class ValidatorWorker:
             logger.warning("event-driven king check failed: %s", e)
             return False, None
         champion = select_champion(
-            filter_weight_confirmed(
-                ledger.entries,
-                enforce=ledger.v9_confirmation_mode == "enforce",
-            ),
+            _ledger_weight_entries(ledger),
             margin=self._config.koth_margin,
             dethrone_z=self._config.koth_dethrone_z,
             ceiling_band_clamp=_ledger_ceiling_band_clamp(ledger),

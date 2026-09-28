@@ -751,3 +751,26 @@ every recently-live weight-setting validator reports protocol 27, there is
 no force override, and `crown_incumbent_mode: disabled` is the exact
 rollback. A pin taken while the marker is off records no incumbent, so a
 flip lands at the next pin for the whole fleet.
+
+### Provisional incumbent (protocol 28)
+
+Holding the crown and being paid are separate facts. When the operator's
+terminal-review emission gate is enforcing
+([`emission-eligibility.md`](../apps/platform/docs/emission-eligibility.md)), an
+artifact whose own source review is unresolved leaves the payable `entries`.
+If that artifact is the incumbent -- the previous pin's champion's owner has
+no payable generation, only its best withheld one -- the pin serves it as
+`provisional_incumbent`, with `crown_incumbent_agent_id` set to its id. It is
+the only withheld entry that can reach the fold.
+
+The fold adds it to the pool as the crown incumbent and derives the champion,
+tail, tie pooling and score-ceiling cohort exactly as above. Every share it is
+allocated then burns: a challenger that clears the band over it is crowned and
+paid as usual, a provisional incumbent that keeps the crown leaves the 65%
+slot unpaid, and one that lands in a tail slot leaves that slot unpaid. Nobody
+else's share grows. A ledger without the field folds exactly as protocol 27.
+
+Platform only filters a held incumbent out of `entries` after every
+recently-live weight-setting validator reports protocol 28; until then
+`enforce` behaves exactly like `shadow`, because a protocol-27 validator would
+ignore the field and crown and pay the runner-up.

@@ -80,6 +80,7 @@ class MemoryFoldParams:
     tie_pooling: bool = False
     ceiling_band_clamp: bool = False
     incumbent_agent_id: UUID | None = None
+    unpaid_agent_id: UUID | None = None
 
 
 @dataclass(frozen=True)
@@ -117,6 +118,7 @@ def memory_fold(inputs: TrackFoldInputs) -> dict[str, float]:
         tie_pooling=params.tie_pooling,
         ceiling_band_clamp=params.ceiling_band_clamp,
         incumbent_agent_id=params.incumbent_agent_id,
+        unpaid_agent_id=params.unpaid_agent_id,
     )
 
 
