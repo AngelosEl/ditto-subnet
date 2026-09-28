@@ -217,7 +217,7 @@ def test_starter_provenance_generator_ignores_untracked_build_outputs(
 def test_causal_basis_prefers_reconstructed_generator_over_downstream_effects() -> None:
     assert l2_prompt_revision(11) == "l2-terra-source-review-v37-policy-v11"
     assert l2_prompt_revision(10) == "l2-terra-source-review-v37-policy-v10"
-    assert L2_DOSSIER_REVISION == "language-neutral-source-v14"
+    assert L2_DOSSIER_REVISION == "language-neutral-source-v15"
     assert l2_cause_prompt_revision(11) == "l3-sol-violation-cause-v27-policy-v11"
     assert l2_cause_tiebreaker_prompt_revision(11) == (
         "l3-sol-cause-disagreement-v7-policy-v11"
@@ -3149,7 +3149,23 @@ async def test_partial_dossier_can_prove_violation_but_never_clear(
     assert result.clearance_path == "l2_violation"
 
 
-async def test_partial_dossier_safe_consensus_cannot_clear(tmp_path: Path) -> None:
+@pytest.mark.parametrize("inventory_gap", [None, "failed", "omitted"])
+async def test_partial_dossier_safe_consensus_cannot_clear(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, inventory_gap: str | None
+) -> None:
+    harness = _FakeHarness() if inventory_gap else _PartialHarness()
+    if inventory_gap:
+        # Failure alone must block clearance even if truncation semantics change.
+        inventory = (
+            {"binary_analysis": [{"analysis_failed": True}]}
+            if inventory_gap == "failed"
+            else {"binary_analysis": [], "opaque_truncated": True}
+        )
+        monkeypatch.setattr(
+            TarSourceRepository,
+            "inventory",
+            lambda _self: json.dumps(inventory),
+        )
     source = "fn main() { serve(); }\nfn serve() {}"
     archive, artifact_sha = _tar(tmp_path, source)
     digest = hashlib.sha256(source.encode()).hexdigest()
@@ -3172,7 +3188,7 @@ async def test_partial_dossier_safe_consensus_cannot_clear(tmp_path: Path) -> No
         requests += 1
         return _response([_tool_call(str(requests), "submit_l2_review", safe)])
 
-    result = await _sol_agent(tmp_path, _PartialHarness(), handler).review(
+    result = await _sol_agent(tmp_path, harness, handler).review(
         str(archive),
         artifact_sha256=artifact_sha,
         attempt_id=ATTEMPT,
@@ -3185,6 +3201,41 @@ async def test_partial_dossier_safe_consensus_cannot_clear(tmp_path: Path) -> No
     assert result.observation.failure_disposition == "retryable_infra"
     assert result.observation.error_code == "l3-adjudicator-incomplete"
     assert not result.dossier_complete
+
+
+@pytest.mark.parametrize("deep_nesting", [False, True])
+async def test_dossier_incomplete_when_binary_analysis_fails(
+    tmp_path: Path, deep_nesting: bool
+) -> None:
+    header = (
+        b"[" * 1_000_000 + b"]" * 1_000_000
+        if deep_nesting
+        else b'{"weight":{"data_offsets":[0,' + b"9" * 5000 + b"]}}"
+    )
+    model = len(header).to_bytes(8, "little") + header + b"\xff" * 16
+    archive_path = tmp_path / "hostile.tar.gz"
+    with tarfile.open(archive_path, "w:gz") as archive:
+        info = tarfile.TarInfo("models/hostile.weights")
+        info.size = len(model)
+        archive.addfile(info, io.BytesIO(model))
+    repository = TarSourceRepository(str(archive_path))
+    agent = _sol_agent(tmp_path, _FakeHarness(), None)
+    dossier, tools, complete, _ = await agent._build_dossier(
+        tmp_path,
+        repository,
+        artifact_sha256=hashlib.sha256(archive_path.read_bytes()).hexdigest(),
+        l1_observation=_l1(),
+        policy_version=SCREENING_POLICY_VERSION,
+        deadline=None,
+    )
+    assert not complete
+    assert tools == l2_review._DOSSIER_ANALYZERS
+    inventory = dossier["bounded_source_inventory"]
+    assert isinstance(inventory, dict)
+    entry = inventory["binary_analysis"][0]
+    assert entry["analysis_failed"] is True
+    assert entry["analysis_truncated"] is True
+    assert entry["format_confidence"] == "low"
 
 
 @pytest.mark.parametrize("recovers", [False, True])
