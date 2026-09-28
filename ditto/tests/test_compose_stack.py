@@ -11,6 +11,10 @@ from ditto.validator.build_info import HEARTBEAT_PROTOCOL_VERSION
 
 COMPOSE_PATH = Path(__file__).parents[2] / "docker-compose.yml"
 COMPOSE_WRAPPER_PATH = Path(__file__).parents[2] / "scripts/validator-compose.sh"
+STACK_UPDATER_INSTALLER_PATH = (
+    Path(__file__).parents[2] / "scripts/install-validator-stack-auto-update.sh"
+)
+ENV_EXAMPLE_PATH = Path(__file__).parents[2] / ".env.example"
 STACK_UPDATER_PATH = (
     Path(__file__).parents[2] / "scripts/validator-stack-auto-update.sh"
 )
@@ -841,3 +845,32 @@ def test_hosted_v7_parallelism_remains_tunable() -> None:
         env["DITTOBENCH_V7_CASE_CONCURRENCY"]
         != env["DITTOBENCH_V7_EMBEDDING_CONCURRENCY"]
     )
+
+
+def test_stack_updater_unit_outlasts_a_full_drain_and_rollback() -> None:
+    stack_updater = STACK_UPDATER_PATH.read_text()
+    installer = STACK_UPDATER_INSTALLER_PATH.read_text()
+
+    def default(name: str) -> int:
+        match = re.search(rf"setting {name} (\d+)\)", stack_updater)
+        assert match is not None, name
+        return int(match.group(1))
+
+    drain = default("VALIDATOR_AUTO_UPDATE_DRAIN_TIMEOUT_SECONDS")
+    ready = default("VALIDATOR_AUTO_UPDATE_READY_TIMEOUT_SECONDS")
+    budget = re.search(r"TIMEOUT_START_SECONDS=(\d+)", stack_updater)
+    assert budget is not None
+    run_unit = installer.split("validator-stack-auto-update.sh run\n", 1)[1]
+    unit = re.match(r"TimeoutStartSec=(\d+)\n", run_unit)
+    assert unit is not None
+    timeout_start = int(unit.group(1))
+
+    assert timeout_start == int(budget.group(1))
+    # Startup committed recovery: one readiness wait plus a full rollback
+    # (two deploy waits, quiescence and resume). Then a fresh update follows.
+    # After the drain: docker stop (30s), a candidate deploy (two readiness
+    # waits) whose health wait fails, then a full rollback (two readiness
+    # waits, a health wait and a resume). systemd must not SIGTERM that path.
+    assert timeout_start >= drain + 30 + (5 + 7) * ready
+    env_example = ENV_EXAMPLE_PATH.read_text()
+    assert f"VALIDATOR_AUTO_UPDATE_DRAIN_TIMEOUT_SECONDS={drain}\n" in env_example
