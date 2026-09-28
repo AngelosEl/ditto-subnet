@@ -1027,6 +1027,10 @@ export function BoardTable(props: { store: LeaderboardStore }): JSX.Element {
   createEffect(() => {
     // A deep-linked page past the end (or a page emptied by newly-loaded
     // data) clamps to the last real page; keep the URL honest about landing.
+    // Only against loaded rows: while the payload is loading, or after a
+    // failed poll, rows() is empty and would throw a deep-linked ?page=N back
+    // to page 1 (and drop it from the URL) before the data arrives.
+    if (!store.payload() || store.unavailable()) return;
     if (boardPage() > pageCount()) {
       setBoardPage(pageCount());
       writeBoardPage(false);
