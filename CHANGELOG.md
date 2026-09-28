@@ -2,6 +2,97 @@
 
 <!-- version list -->
 
+## v0.325.3 (2026-09-28)
+
+### Bug Fixes
+
+- **backroom**: Require write scope for MCP write tools
+  ([#2382](https://github.com/ditto-assistant/ditto-subnet/pull/2382),
+  [`e416d7c`](https://github.com/ditto-assistant/ditto-subnet/commit/e416d7cb882cc87ace157ba0590c105a26a21114))
+
+- **coding-starter-kit**: Release a run's claim when the request is dropped
+  ([#2383](https://github.com/ditto-assistant/ditto-subnet/pull/2383),
+  [`ac3e6c1`](https://github.com/ditto-assistant/ditto-subnet/commit/ac3e6c1561ae8fd33569d7e63a812d41f4593c44))
+
+- **dashboard**: Keep a deep-linked leaderboard page while data loads
+  ([#2403](https://github.com/ditto-assistant/ditto-subnet/pull/2403),
+  [`dbb2aeb`](https://github.com/ditto-assistant/ditto-subnet/commit/dbb2aeb6837120b9fa790cdccbcce8fdda31cc46))
+
+- **dashboard**: Label an unranked provisional run instead of printing a null rank
+  ([#2401](https://github.com/ditto-assistant/ditto-subnet/pull/2401),
+  [`99f7c2e`](https://github.com/ditto-assistant/ditto-subnet/commit/99f7c2eaf9410f07c5831be3b19dd105702089bc))
+
+- **dittobench-api**: Pin git source builds to commit SHAs
+  ([#2326](https://github.com/ditto-assistant/ditto-subnet/pull/2326),
+  [`3bdee0f`](https://github.com/ditto-assistant/ditto-subnet/commit/3bdee0fa48ff4c10bc767814bb3d12e27dd4e2e0))
+
+- **miner-cli**: Report a truncated tarball as a failed check instead of crashing
+  ([#2502](https://github.com/ditto-assistant/ditto-subnet/pull/2502),
+  [`b7f3a14`](https://github.com/ditto-assistant/ditto-subnet/commit/b7f3a1408738a12d1bf8a6e5ccc4412ee100fcd6))
+
+- **platform**: Pass deploy config over SSH stdin
+  ([#2329](https://github.com/ditto-assistant/ditto-subnet/pull/2329),
+  [`12dcbec`](https://github.com/ditto-assistant/ditto-subnet/commit/12dcbecb1fa62228443c655a3a87bab8ffdc831b))
+
+- **platform**: Prevent pinned canaries from starving claims
+  ([#2513](https://github.com/ditto-assistant/ditto-subnet/pull/2513),
+  [`091c21a`](https://github.com/ditto-assistant/ditto-subnet/commit/091c21aaa01ddcabcdc97f41ab8855e1cbafe747))
+
+- **preview**: Print a local dashboard URL that loads through the Vite proxy
+  ([#2500](https://github.com/ditto-assistant/ditto-subnet/pull/2500),
+  [`4b1e43c`](https://github.com/ditto-assistant/ditto-subnet/commit/4b1e43c3511bc8b7981dfb0057ed2c7e92bc3a0a))
+
+- **screener**: Expose bounded L1 verdict failure subcodes
+  ([#2514](https://github.com/ditto-assistant/ditto-subnet/pull/2514),
+  [`3b101de`](https://github.com/ditto-assistant/ditto-subnet/commit/3b101de2b7e6acb691c9ee0944d9e677895bc531))
+
+- **screener**: Keep pre-reservation inference refusals distinct from a spent allowance
+  ([#2220](https://github.com/ditto-assistant/ditto-subnet/pull/2220),
+  [`cedfb61`](https://github.com/ditto-assistant/ditto-subnet/commit/cedfb61d782105ee7c4c480aa1ef3065bc754ba7))
+
+- **screener**: Release credential locks on cancelled requests
+  ([#2506](https://github.com/ditto-assistant/ditto-subnet/pull/2506),
+  [`98f3fd2`](https://github.com/ditto-assistant/ditto-subnet/commit/98f3fd2fc7dfb6ae1ff75927a2e7ba460a5a7ff4))
+
+- **screener**: Respect renewed leases during docker builds
+  ([#2504](https://github.com/ditto-assistant/ditto-subnet/pull/2504),
+  [`11cc75c`](https://github.com/ditto-assistant/ditto-subnet/commit/11cc75c884b34d90bba77ca447b67a0d8ad70aad))
+
+- **screener**: Run the trusted image as a non-root user
+  ([#2354](https://github.com/ditto-assistant/ditto-subnet/pull/2354),
+  [`790c0c1`](https://github.com/ditto-assistant/ditto-subnet/commit/790c0c1e468dfdf2d97ba5fc0d00f0f81d38f520))
+
+- **validator**: Let the stack updater unit outlast a full drain and rollback
+  ([#2496](https://github.com/ditto-assistant/ditto-subnet/pull/2496),
+  [`bfd52e8`](https://github.com/ditto-assistant/ditto-subnet/commit/bfd52e88a09ef0c6b786789018d0bb853da14d7b))
+
+- **validator**: Refuse compose scale and watch on the managed stack
+  ([#2498](https://github.com/ditto-assistant/ditto-subnet/pull/2498),
+  [`9d78037`](https://github.com/ditto-assistant/ditto-subnet/commit/9d780375a625a2ec86fd13c1474ad41b8891cd03))
+
+- **validator**: Sign transcript uploads before enforcement
+  ([#2324](https://github.com/ditto-assistant/ditto-subnet/pull/2324),
+  [`6b91b3f`](https://github.com/ditto-assistant/ditto-subnet/commit/6b91b3ffc5dbee383f4547be27dcb716f390d9b1))
+
+### Chores
+
+- **deps**: Bump clap from 4.6.6 to 4.6.7 in /miners/dittobench-coding-starter-kit
+  ([#1983](https://github.com/ditto-assistant/ditto-subnet/pull/1983),
+  [`5f86003`](https://github.com/ditto-assistant/ditto-subnet/commit/5f86003be79c832940a07468813cfb22bda8ae09))
+
+- **deps**: Bump golang.org/x/text from 0.41.0 to 0.42.0 in /services/dittobench-api
+  ([#1980](https://github.com/ditto-assistant/ditto-subnet/pull/1980),
+  [`9393622`](https://github.com/ditto-assistant/ditto-subnet/commit/939362216407ec9ef5a571fbb1d822859cc0ba58))
+
+- **deps**: Bump the actions group across 1 directory with 5 updates
+  ([#1986](https://github.com/ditto-assistant/ditto-subnet/pull/1986),
+  [`9f426a0`](https://github.com/ditto-assistant/ditto-subnet/commit/9f426a09169123fe19d968674624d751582fae12))
+
+- **deps-dev**: Bump @faircopy/astro from 1.15.0 to 1.21.1 in /apps/platform
+  ([#2275](https://github.com/ditto-assistant/ditto-subnet/pull/2275),
+  [`2c4c2c1`](https://github.com/ditto-assistant/ditto-subnet/commit/2c4c2c125809de823eee05b674b55052b9a42168))
+
+
 ## v0.325.2 (2026-09-28)
 
 ### Bug Fixes
