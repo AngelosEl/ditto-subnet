@@ -22,4 +22,11 @@ applies use `.github/workflows/infra-plan-apply.yml`, GCP Workload Identity
 Federation, protected GitHub environments, and private GCS plan objects. The
 workflow applies the exact reviewed plan binary for an exact main commit.
 
+Because any merged main commit can be planned and applied, every infra layer
+must be least-privileged on its own: a replacement custom role and its binding
+land in the same layer that removes the broad grant it replaces, never in a
+later stacked PR. `ditto/tests/test_infra_delivery.py` fails any revision that
+grants the screener capacity controller a broad or project-wide predefined
+role, or widens its custom roles.
+
 No Terraform or Ansible action is automatic on merge.
