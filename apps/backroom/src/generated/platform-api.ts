@@ -44445,7 +44445,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Agent is past the screening stage. */
+            /** @description Agent is past the screening stage, or the verdict violated a database constraint and was not applied. */
             409: {
                 headers: {
                     [name: string]: unknown;

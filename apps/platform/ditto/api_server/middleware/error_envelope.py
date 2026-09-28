@@ -20,6 +20,7 @@ from ditto.api_server.endpoints.retrieval import (
 from ditto.api_server.endpoints.screener import (
     AgentNotScreenableError,
     ScreenerAuthError,
+    ScreenResultConstraintError,
 )
 from ditto.api_server.endpoints.validator import (
     AgentNotEvaluatableError,
@@ -152,6 +153,9 @@ ERROR_CODE_INFERENCE_RESERVATION_TOO_LARGE = 4109
 # driving the uploaded -> evaluating promotion gate.
 ERROR_CODE_SCREENER_AUTH = 5000
 ERROR_CODE_AGENT_NOT_SCREENABLE = 5001
+# 5002 -> 409. The verified verdict violated a database constraint and its
+# transaction rolled back: definitively not applied, the attempt still running.
+ERROR_CODE_SCREEN_RESULT_CONSTRAINT_VIOLATION = 5002
 
 
 # Every terminal decline, in one table rather than a ladder of ifs. A ladder
@@ -493,6 +497,17 @@ def register_exception_handlers(app: FastAPI) -> None:
         logger.info(f"agent not in screenable state: {exc}")
         return envelope_response(
             409, ERROR_CODE_AGENT_NOT_SCREENABLE, "agent is not screenable"
+        )
+
+    @app.exception_handler(ScreenResultConstraintError)
+    async def _screen_result_constraint_handler(
+        _request: Request, _exc: ScreenResultConstraintError
+    ) -> JSONResponse:
+        # Logged with its attempt and constraint where the verdict was refused.
+        return envelope_response(
+            409,
+            ERROR_CODE_SCREEN_RESULT_CONSTRAINT_VIOLATION,
+            "result-constraint-violation: verdict was not applied",
         )
 
     @app.exception_handler(Exception)

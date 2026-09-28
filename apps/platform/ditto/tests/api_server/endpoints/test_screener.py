@@ -65,6 +65,7 @@ from ditto.api_server.endpoints.screener import (
 from ditto.api_server.middleware.error_envelope import (
     ERROR_CODE_AGENT_NOT_FOUND,
     ERROR_CODE_AGENT_NOT_SCREENABLE,
+    ERROR_CODE_SCREEN_RESULT_CONSTRAINT_VIOLATION,
     ERROR_CODE_SCREENER_AUTH,
     ERROR_CODE_VALIDATION,
 )
@@ -1030,10 +1031,12 @@ async def _seed_screener_node(
         )
 
 
-def _bounded_review_audit(*, steps_used: int = 6) -> ScreenReviewAudit:
+def _bounded_review_audit(
+    *, steps_used: int = 6, reason_code: str = "source-review-inconclusive"
+) -> ScreenReviewAudit:
     return ScreenReviewAudit(
         stage="l1",
-        reason_code="source-review-inconclusive",
+        reason_code=reason_code,
         prompt_revision="source-review-v9",
         harness_revision="policy-v9",
         max_steps=8,
@@ -11429,6 +11432,116 @@ class TestSubmitResult:
         )
         assert response.status_code == 404
         assert response.json()["error_code"] == ERROR_CODE_AGENT_NOT_FOUND
+
+    @pytest.mark.parametrize(
+        "reason_code",
+        [
+            "l2-runtime-evidence-unavailable",
+            "source-review-read-budget-exhausted",
+            "source-review-step-budget-exhausted",
+            "source-review-lease-budget-exhausted",
+            "behavioral-oracle-passed",
+            "l2-model-inconclusive",
+        ],
+    )
+    async def test_v13_inconclusive_with_review_audit_persists(
+        self,
+        app: FastAPI,
+        client: httpx.AsyncClient,
+        session_maker: async_sessionmaker[AsyncSession],
+        reason_code: str,
+    ) -> None:
+        # A strict V13 INCONCLUSIVE carries its audit under the deciding
+        # evidence code, not only the historical no-verdict allowlist.
+        agent_id = await _seed_agent(session_maker, status=AgentStatus.SCREENING)
+        attempt_id = await _seed_running_attempt(
+            session_maker, agent_id=agent_id, policy_version=13
+        )
+        _install_db(app, session_maker)
+        _install_chain(app)
+        audit = _bounded_review_audit(reason_code=reason_code)
+
+        response = await client.post(
+            f"/api/v1/screener/agent/{agent_id}/result",
+            json=_result_payload(
+                agent_id,
+                passed=False,
+                policy_version=13,
+                attempt_id=attempt_id,
+                outcome="inconclusive",
+                manifest_digest="12" * 32,
+                reason_code=reason_code,
+                review_audit_digest=audit.canonical_digest(),
+                review_audit=audit.model_dump(mode="json"),
+            ),
+        )
+
+        assert response.status_code == 200, response.text
+        assert response.json()["status"] == AgentStatus.SCREENING_FAILED
+        async with session_maker() as session:
+            agent = await session.get(Agent, agent_id)
+            attempt = await session.get(ScreeningAttempt, attempt_id)
+            quarantine = await session.scalar(
+                select(ScreeningQuarantine).where(
+                    ScreeningQuarantine.attempt_id == attempt_id
+                )
+            )
+            assert agent is not None and agent.status == AgentStatus.SCREENING_FAILED
+            assert attempt is not None and attempt.status == "expired"
+            assert quarantine is not None
+            assert quarantine.reason_code == reason_code
+            assert quarantine.review_audit_digest == audit.canonical_digest()
+            assert quarantine.review_audit == audit.model_dump(mode="json")
+
+    async def test_result_integrity_error_returns_409_and_logs(
+        self,
+        app: FastAPI,
+        client: httpx.AsyncClient,
+        session_maker: async_sessionmaker[AsyncSession],
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        # A malformed stored code trips screening_quarantines_reason_code_check
+        # inside the verdict transaction: a definitive not-applied 409, never a
+        # 500 that leaves the worker guessing and the attempt to the orphan sweep.
+        monkeypatch.setattr(
+            "ditto.api_server.endpoints.screener.INCONCLUSIVE_REASON_CODE",
+            "Not A Reason Code",
+        )
+        agent_id = await _seed_agent(session_maker, status=AgentStatus.SCREENING)
+        attempt_id = await _seed_running_attempt(
+            session_maker, agent_id=agent_id, policy_version=13
+        )
+        _install_db(app, session_maker)
+        _install_chain(app)
+
+        with caplog.at_level("ERROR", logger="ditto.api_server.endpoints.screener"):
+            response = await client.post(
+                f"/api/v1/screener/agent/{agent_id}/result",
+                json=_result_payload(
+                    agent_id,
+                    passed=False,
+                    policy_version=13,
+                    attempt_id=attempt_id,
+                    outcome="inconclusive",
+                ),
+            )
+
+        assert response.status_code == 409, response.text
+        assert response.json()["error_code"] == (
+            ERROR_CODE_SCREEN_RESULT_CONSTRAINT_VIOLATION
+        )
+        assert response.json()["message"].startswith("result-constraint-violation")
+        assert "screening_quarantines_reason_code_check" in caplog.text
+        async with session_maker() as session:
+            agent = await session.get(Agent, agent_id)
+            attempt = await session.get(ScreeningAttempt, attempt_id)
+            quarantine_count = await session.scalar(
+                select(func.count()).select_from(ScreeningQuarantine)
+            )
+            assert agent is not None and agent.status == AgentStatus.SCREENING
+            assert attempt is not None and attempt.status == "running"
+            assert quarantine_count == 0
 
 
 _OTHER_NODE_KEYPAIR = bittensor.Keypair.create_from_uri("//Bob")

@@ -38,6 +38,8 @@ import logging
 import re
 import secrets
 import time
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Annotated, Any, Final, Literal, cast
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
@@ -54,6 +56,7 @@ from fastapi import (
 )
 from sqlalchemy import exists, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ditto.api_models import (
@@ -466,6 +469,50 @@ class AgentNotScreenableError(Exception):
     ``scored`` / ``live`` / ``banned`` agent (or flipping a decided verdict) is
     a conflict the worker should not retry: HTTP 409 (code 5001).
     """
+
+
+class ScreenResultConstraintError(Exception):
+    """Raised when applying a verified verdict violates a database constraint.
+
+    The verdict transaction rolled back, so nothing was applied and the attempt
+    stays ``running``. The envelope handler maps this to HTTP 409 (code 5002,
+    ``result-constraint-violation``): a definitive not-applied signal, unlike a
+    bare 5xx that may have landed.
+    """
+
+
+@asynccontextmanager
+async def _verdict_constraint_guard(
+    *,
+    agent_id: UUID,
+    attempt_id: UUID,
+    reason_code: str | None,
+    outcome: str | None,
+) -> AsyncIterator[None]:
+    """Turn an ``IntegrityError`` from the verdict transaction into a 409.
+
+    Enter it outside ``session.begin()``, which has already rolled back by the
+    time the error reaches here. The rejected row can hold the signed review
+    audit, so only the violated constraint's name is logged, never the driver
+    detail.
+    """
+    try:
+        yield
+    except IntegrityError as error:
+        # SA's asyncpg dialect carries ``constraint_name`` on ``orig.__cause__``.
+        cause = error.orig.__cause__ if error.orig is not None else None
+        logger.error(
+            "screen verdict not applied agent_id=%s attempt_id=%s reason_code=%s "
+            "outcome=%s constraint=%s",
+            agent_id,
+            attempt_id,
+            reason_code,
+            outcome,
+            getattr(cause, "constraint_name", None),
+        )
+        raise ScreenResultConstraintError(
+            "verdict violated a database constraint"
+        ) from error
 
 
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
@@ -4679,7 +4726,12 @@ def _require_claimed_attempt_owner(
     responses={
         401: {"description": "Invalid screener credentials or signature."},
         404: {"description": "No agent with the given id."},
-        409: {"description": "Agent is past the screening stage."},
+        409: {
+            "description": (
+                "Agent is past the screening stage, or the verdict violated a "
+                "database constraint and was not applied."
+            )
+        },
         422: {"description": "Malformed request body or UUID path parameter."},
     },
 )
@@ -5117,7 +5169,15 @@ async def submit_result(
 
     # 4. Atomic: apply the verdict + pin the dataset. The row lock serializes
     #    concurrent verdicts so the status guard + transition can't be lost-updated.
-    async with session.begin():
+    async with (
+        _verdict_constraint_guard(
+            agent_id=agent_id,
+            attempt_id=claimed_attempt_id,
+            reason_code=stored_reason_code,
+            outcome=outcome_value,
+        ),
+        session.begin(),
+    ):
         agent = await get_agent_by_id(session, agent_id=agent_id, for_update=True)
         if agent is None:
             raise AgentNotFoundError(f"no agent with id={agent_id}")
