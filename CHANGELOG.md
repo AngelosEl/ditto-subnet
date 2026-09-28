@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.321.6 (2026-09-28)
+
+### Bug Fixes
+
+- **platform**: Match worker source-review manifest digest
+  ([#2489](https://github.com/ditto-assistant/ditto-subnet/pull/2489),
+  [`1911311`](https://github.com/ditto-assistant/ditto-subnet/commit/19113116e9a99983c2e800274bab3123aaff6674))
+
+
 ## v0.321.5 (2026-09-27)
 
 ### Bug Fixes
