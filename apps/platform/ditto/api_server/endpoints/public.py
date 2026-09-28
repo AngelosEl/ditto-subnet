@@ -409,6 +409,7 @@ from ditto.db.queries.scores import (
     v9_confirmation_public_projections,
 )
 from ditto.db.queries.screening import (
+    LEASE_EXPIRED_REASON_CODE,
     PROVIDER_BACKOFF_REASON_CODES,
     get_running_screening_attempts,
     infra_retry_agent_admitted,
@@ -7228,9 +7229,13 @@ async def _admission_lane(
     A failure's reason code names the lane that failed. Otherwise the attempt's
     Platform-queued image build orders the lanes: build, then runtime smoke,
     then source review. A worker-local build or smoke leaves no row to evidence
-    its progress, so that lane stays unknown.
+    its progress, so that lane stays unknown. A lease expiry names no lane, so
+    it too is ordered by the build.
     """
-    if attempt.reason_code is not None:
+    if (
+        attempt.reason_code is not None
+        and attempt.reason_code != LEASE_EXPIRED_REASON_CODE
+    ):
         return _ADMISSION_LANE_BY_REASON_CODE.get(attempt.reason_code)
     build = await session.scalar(
         select(SubmissionImageBuild).where(

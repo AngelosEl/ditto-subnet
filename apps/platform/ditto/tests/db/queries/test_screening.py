@@ -39,6 +39,7 @@ from ditto.db.models import (
 )
 from ditto.db.queries.screening import (
     _EXHAUSTED_REASON_CODE,
+    LEASE_EXPIRED_REASON_CODE,
     MAX_SCREENING_EXPIRIES,
     POLICY_ONLY_RESCREEN_REASON,
     _inconclusive_attempt_count,
@@ -2577,6 +2578,54 @@ async def test_expired_scored_policy_release_pauses_without_removing_the_score(
         )
     )
     assert release is not None and release.state == "paused"
+
+
+async def test_expired_lease_is_typed_without_changing_the_expiry_count(
+    session: AsyncSession,
+) -> None:
+    now = datetime.now(UTC)
+    agent = Agent(
+        agent_id=uuid4(),
+        miner_hotkey="5HK-lease-expired",
+        name="lease-expired",
+        sha256=uuid4().hex * 2,
+        status=AgentStatus.SCREENING,
+    )
+    canary = _scored_agent(hotkey="5HK-canary-expired", name="canary-expired")
+    attempt, canary_attempt = (
+        ScreeningAttempt(
+            attempt_id=uuid4(),
+            agent_id=owner.agent_id,
+            screener_hotkey=_SCREENER,
+            policy_version=SCREENING_POLICY_VERSION,
+            status="running",
+            started_at=now - timedelta(minutes=75),
+            deadline=now - timedelta(minutes=5),
+            reason_code=reason_code,
+        )
+        for owner, reason_code in ((agent, None), (canary, POLICY_ONLY_RESCREEN_REASON))
+    )
+    async with session.begin():
+        session.add_all((agent, canary))
+        await session.flush()
+        session.add_all((attempt, canary_attempt))
+
+    async with session.begin():
+        assert await expire_screening_attempts(session, now=now) == 2
+
+    assert attempt.status == "expired"
+    assert attempt.public_reason == "Screening lease expired"
+    assert attempt.reason_code == LEASE_EXPIRED_REASON_CODE
+    assert agent.status == AgentStatus.SCREENING_FAILED
+    assert agent.screening_reason == "Screening lease expired"
+    assert agent.screening_reason_code == LEASE_EXPIRED_REASON_CODE
+    # A claim-time execution mode survives the expiry.
+    assert canary_attempt.status == "expired"
+    assert canary_attempt.reason_code == POLICY_ONLY_RESCREEN_REASON
+    assert canary.status == AgentStatus.SCORED
+    assert canary.screening_reason_code is None
+    async with session.begin():
+        assert await _inconclusive_attempt_count(session, agent_id=agent.agent_id) == 1
 
 
 async def test_scheduled_rescreen_does_not_requeue_unadmitted_historical_scored(
