@@ -3750,6 +3750,15 @@ PublicValidationFailureCode = Literal[
     "provider_recovery_exhausted",
     "grant_decline_evidence_mismatch",
     "budget_evidence_absent",
+    "request_too_large",
+    "invalid_json",
+    "invalid_schema",
+    "stale_session",
+    "model_not_allowed",
+    "grant_not_servable",
+    "grant_rate_denied",
+    "platform_capacity",
+    "provider_failure",
     "provider_outage_parked",
 ]
 
@@ -3758,6 +3767,19 @@ _PUBLIC_AGENT_FAILURE_CODES: frozenset[str] = frozenset(
         "inference_allowance_exhausted",
         "inference_request_rejected",
         "model_inference_required",
+    }
+)
+_ADMISSION_PUBLIC_CODES: frozenset[str] = frozenset(
+    {
+        "request_too_large",
+        "invalid_json",
+        "invalid_schema",
+        "stale_session",
+        "model_not_allowed",
+        "grant_not_servable",
+        "grant_rate_denied",
+        "platform_capacity",
+        "provider_failure",
     }
 )
 _PUBLIC_INFRA_RELAY_CAUSES: frozenset[str] = frozenset(
@@ -3794,7 +3816,7 @@ def public_validation_failure_code(
         return cast(PublicValidationFailureCode, failure_detail)
     if ":" in failure_detail:
         _code, cause = failure_detail.split(":", 1)
-        if cause in _PUBLIC_INFRA_RELAY_CAUSES:
+        if cause in _PUBLIC_INFRA_RELAY_CAUSES or cause in _ADMISSION_PUBLIC_CODES:
             return cast(PublicValidationFailureCode, cause)
     return None
 
