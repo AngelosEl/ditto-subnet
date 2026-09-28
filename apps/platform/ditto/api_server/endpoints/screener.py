@@ -218,6 +218,7 @@ from ditto.db.queries.screening import (
     infra_retry_agent_admitted,
     prerequisite_screening_predicates,
     screening_priority_order,
+    sweep_screening_leases,
     try_acquire_screening_claim_lock,
 )
 from ditto.db.queries.screening_infra_retry import INFRA_AUTO_RETRY_REASON_CODES
@@ -1082,6 +1083,25 @@ async def refresh_screener_node(
     )
 
 
+async def _sweep_screening_leases(
+    session: AsyncSession,
+    *,
+    now: datetime,
+    source: str,
+    screener_hotkey: str | None = None,
+) -> None:
+    orphaned, expired = await sweep_screening_leases(
+        session, now=now, screener_hotkey=screener_hotkey
+    )
+    if orphaned or expired:
+        logger.info(
+            "screening lease sweep source=%s orphaned=%d expired=%d",
+            source,
+            orphaned,
+            expired,
+        )
+
+
 @router.put(
     "/controller/capacity",
     response_model=ScreenerCapacitySnapshotResponse,
@@ -1136,6 +1156,13 @@ async def update_screener_capacity(
                     created_at=now,
                 )
             )
+    # Backstop for a fleet that is not polling claim at all. The heartbeat
+    # above is fenced lease state, so a sweep failure must not fail it.
+    try:
+        async with session.begin():
+            await _sweep_screening_leases(session, now=now, source="controller")
+    except Exception:
+        logger.exception("screening lease sweep source=controller failed")
     return ScreenerCapacitySnapshotResponse(
         **payload.model_dump(mode="python"),
         controller_heartbeat_at=now,
@@ -3395,6 +3422,19 @@ async def claim(
 ) -> ScreenerQueueResponse:
     """Lease pending work and make its active screening state public."""
     response.headers["Cache-Control"] = "no-store"
+    # Sweep in its own transaction before any refusal or early return below,
+    # so draining, held and zero-admission claimers still retire dead leases.
+    now = datetime.now(UTC)
+    if session.get_bind().dialect.name == "postgresql":
+        async with session.begin():
+            await _sweep_screening_leases(
+                session, now=now, source="claim", screener_hotkey=screener_hotkey
+            )
+    else:
+        async with _CLAIM_FALLBACK_LOCK, session.begin():
+            await _sweep_screening_leases(
+                session, now=now, source="claim", screener_hotkey=screener_hotkey
+            )
     node_status = getattr(request.state, "screener_node_status", "active")
     if node_status != "active":
         raise AgentNotScreenableError(
@@ -3406,7 +3446,6 @@ async def claim(
             "screening policy mismatch before claim: platform requires "
             f"{required_policy}, worker declared {policy_version}"
         )
-    now = datetime.now(UTC)
     lease_ttl = (
         _RENEWABLE_SCREENING_LEASE_TTL
         if renewable_lease

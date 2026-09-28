@@ -490,6 +490,55 @@ async def _seed_running_attempt(
     return attempt_id
 
 
+async def _seed_overdue_attempt(
+    maker: async_sessionmaker[AsyncSession],
+    *,
+    agent_id: UUID,
+    screener_hotkey: str = _SCREENER_HOTKEY,
+    rescreen_release: bool = False,
+) -> UUID:
+    """Persist a running lease whose deadline passed while no sweep ran."""
+    attempt_id = uuid4()
+    now = datetime.now(UTC)
+    async with maker() as session, session.begin():
+        session.add(
+            ScreeningAttempt(
+                attempt_id=attempt_id,
+                agent_id=agent_id,
+                screener_hotkey=screener_hotkey,
+                policy_version=SCREENING_POLICY_VERSION,
+                status="running",
+                started_at=now - timedelta(minutes=20),
+                deadline=now - timedelta(minutes=1),
+            )
+        )
+        if rescreen_release:
+            activation = ScreenerPolicyActivation(
+                parent_revision=0,
+                target_policy_version=SCREENING_POLICY_VERSION + 1,
+                activate_at=now + timedelta(days=1),
+                rescreen_scored=True,
+                reason="scored rescreen canary whose lease went overdue",
+                actor="test",
+            )
+            session.add(activation)
+            await session.flush()
+            session.add(
+                ScoredPolicyRescreenRelease(
+                    release_id=uuid4(),
+                    activation_revision=activation.revision,
+                    target_policy_version=SCREENING_POLICY_VERSION + 1,
+                    agent_id=agent_id,
+                    position=1,
+                    state="running",
+                    attempt_id=attempt_id,
+                    actor="test",
+                    reason="scored rescreen canary whose lease went overdue",
+                )
+            )
+    return attempt_id
+
+
 async def _seed_review_settings_revision(
     maker: async_sessionmaker[AsyncSession], settings: ScreenerReviewSettings
 ) -> ScreenerReviewSettingsRevision:
@@ -1530,6 +1579,91 @@ class TestFederatedScreenerNodes:
         assert retry.json()["build_id"] == build["build_id"]
         assert retry.json()["status"] == "succeeded"
         assert retry.json()["image_digest"] == "sha256:" + "a" * 64
+
+    async def test_controller_capacity_put_expires_overdue_attempts(
+        self,
+        app: FastAPI,
+        client: httpx.AsyncClient,
+        session_maker: async_sessionmaker[AsyncSession],
+    ) -> None:
+        first_agent = await _seed_agent(session_maker, status=AgentStatus.SCREENING)
+        second_agent = await _seed_agent(
+            session_maker,
+            status=AgentStatus.SCREENING,
+            name="beta-agent",
+            sha256="ef" * 32,
+        )
+        first_attempt = await _seed_overdue_attempt(
+            session_maker, agent_id=first_agent, rescreen_release=True
+        )
+        second_attempt = await _seed_overdue_attempt(
+            session_maker,
+            agent_id=second_agent,
+            screener_hotkey="5OtherFleetSweepHotkeyXXXXXXXXXXXXXXXXXXXXXXXXXX",
+        )
+        _install_db(app, session_maker)
+        app.state.config = replace(
+            app.state.config,
+            screener_auth=replace(
+                app.state.config.screener_auth,
+                controller_api_token=_CONTROLLER_TOKEN,
+            ),
+        )
+
+        response = await client.put(
+            "/api/v1/screener/controller/capacity",
+            headers={"Authorization": f"Bearer {_CONTROLLER_TOKEN}"},
+            json=_capacity_payload("prod:sweep"),
+        )
+
+        assert response.status_code == 200, response.text
+        async with session_maker() as session:
+            attempts = [
+                await session.get(ScreeningAttempt, attempt_id)
+                for attempt_id in (first_attempt, second_attempt)
+            ]
+            release = await session.scalar(
+                select(ScoredPolicyRescreenRelease).where(
+                    ScoredPolicyRescreenRelease.attempt_id == first_attempt
+                )
+            )
+        assert [attempt.status if attempt else None for attempt in attempts] == [
+            "expired",
+            "expired",
+        ]
+        assert release is not None and release.state == "paused"
+
+    async def test_controller_capacity_put_survives_a_failed_lease_sweep(
+        self,
+        app: FastAPI,
+        client: httpx.AsyncClient,
+        session_maker: async_sessionmaker[AsyncSession],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _install_db(app, session_maker)
+        app.state.config = replace(
+            app.state.config,
+            screener_auth=replace(
+                app.state.config.screener_auth,
+                controller_api_token=_CONTROLLER_TOKEN,
+            ),
+        )
+        monkeypatch.setattr(
+            "ditto.api_server.endpoints.screener.sweep_screening_leases",
+            AsyncMock(side_effect=RuntimeError("sweep failed")),
+        )
+
+        response = await client.put(
+            "/api/v1/screener/controller/capacity",
+            headers={"Authorization": f"Bearer {_CONTROLLER_TOKEN}"},
+            json=_capacity_payload("prod:sweep"),
+        )
+
+        assert response.status_code == 200, response.text
+        assert response.json()["controller_epoch"] == "prod:sweep"
+        async with session_maker() as session:
+            snapshot = await session.get(ScreenerCapacitySnapshot, "prod")
+        assert snapshot is not None and snapshot.controller_epoch == "prod:sweep"
 
     async def test_controller_lease_fences_other_epochs_and_bootstraps_node(
         self,
@@ -4065,6 +4199,219 @@ class TestClaim:
         full = await client.post(_CLAIM_URL, headers=node_headers)
         assert full.status_code == 200, full.text
         assert full.json()["items"] == []
+
+    async def test_claim_with_zero_admission_still_expires_overdue_attempts(
+        self,
+        app: FastAPI,
+        client: httpx.AsyncClient,
+        session_maker: async_sessionmaker[AsyncSession],
+    ) -> None:
+        hotkey = "5ZeroAdmissionSweepHotkeyXXXXXXXXXXXXXXXXXXXXXXX"
+        token = "zero-admission-sweep-token-at-least-32-characters"
+        await _seed_screener_node(
+            session_maker,
+            node_id="zero-admission-sweep-node",
+            hotkey=hotkey,
+            token=token,
+            screening_concurrency=0,
+        )
+        agent_id = await _seed_agent(session_maker, status=AgentStatus.SCREENING)
+        attempt_id = await _seed_overdue_attempt(
+            session_maker,
+            agent_id=agent_id,
+            screener_hotkey=hotkey,
+            rescreen_release=True,
+        )
+        _install_db(app, session_maker)
+
+        response = await client.post(
+            _CLAIM_URL,
+            headers={"Authorization": f"Bearer {token}", "X-Screener-Hotkey": hotkey},
+        )
+
+        assert response.status_code == 200, response.text
+        assert response.json()["items"] == []
+        async with session_maker() as session:
+            attempt = await session.get(ScreeningAttempt, attempt_id)
+            agent = await session.get(Agent, agent_id)
+            release = await session.scalar(
+                select(ScoredPolicyRescreenRelease).where(
+                    ScoredPolicyRescreenRelease.attempt_id == attempt_id
+                )
+            )
+        assert attempt is not None and attempt.status == "expired"
+        assert agent is not None and agent.status == AgentStatus.SCREENING_FAILED
+        assert release is not None and release.state == "paused"
+
+    async def test_claim_from_draining_node_expires_overdue_attempts_before_refusing(
+        self,
+        app: FastAPI,
+        client: httpx.AsyncClient,
+        session_maker: async_sessionmaker[AsyncSession],
+    ) -> None:
+        node_id = "draining-sweep-node"
+        hotkey = "5DrainingSweepNodeHotkeyXXXXXXXXXXXXXXXXXXXXXXXX"
+        token = "draining-sweep-node-token-at-least-32-characters"
+        await _seed_screener_node(
+            session_maker,
+            node_id=node_id,
+            hotkey=hotkey,
+            token=token,
+            screening_concurrency=2,
+        )
+        async with session_maker() as session, session.begin():
+            await session.execute(
+                update(ScreenerNode)
+                .where(ScreenerNode.node_id == node_id)
+                .values(status="draining")
+            )
+        agent_id = await _seed_agent(session_maker, status=AgentStatus.SCREENING)
+        attempt_id = await _seed_overdue_attempt(
+            session_maker, agent_id=agent_id, screener_hotkey=hotkey
+        )
+        _install_db(app, session_maker)
+
+        response = await client.post(
+            _CLAIM_URL,
+            headers={"Authorization": f"Bearer {token}", "X-Screener-Hotkey": hotkey},
+        )
+
+        assert response.status_code == 409, response.text
+        assert response.json()["error_code"] == ERROR_CODE_AGENT_NOT_SCREENABLE
+        async with session_maker() as session:
+            attempt = await session.get(ScreeningAttempt, attempt_id)
+            agent = await session.get(Agent, agent_id)
+        assert attempt is not None and attempt.status == "expired"
+        assert agent is not None and agent.status == AgentStatus.SCREENING_FAILED
+
+    async def test_legacy_gcp_held_claim_still_sweeps_overdue_attempts(
+        self,
+        app: FastAPI,
+        client: httpx.AsyncClient,
+        session_maker: async_sessionmaker[AsyncSession],
+    ) -> None:
+        agent_id = await _seed_agent(session_maker, status=AgentStatus.SCREENING)
+        attempt_id = await _seed_overdue_attempt(session_maker, agent_id=agent_id)
+        async with session_maker() as session, session.begin():
+            session.add(
+                ScreenerProviderSettingsRevision(
+                    environment="prod",
+                    parent_revision=0,
+                    settings={
+                        "runtime_provider_priority": ["hetzner", "gcp"],
+                        "source_review_provider_priority": ["hetzner", "gcp"],
+                        "build_provider_priority": ["hetzner", "gcp"],
+                        "gce_overflow_enabled": True,
+                        "primary_node_id": "subnet-screener-1",
+                    },
+                    reason="Hold the legacy GCP principal behind the primary",
+                    actor="test",
+                )
+            )
+        _install_db(app, session_maker)
+
+        response = await client.post(_CLAIM_URL)
+
+        assert response.status_code == 200, response.text
+        assert response.json()["items"] == []
+        async with session_maker() as session:
+            attempt = await session.get(ScreeningAttempt, attempt_id)
+        assert attempt is not None and attempt.status == "expired"
+
+    async def test_claim_lock_miss_still_sweeps_overdue_attempts(
+        self,
+        app: FastAPI,
+        client: httpx.AsyncClient,
+        session_maker: async_sessionmaker[AsyncSession],
+    ) -> None:
+        hotkey = "5ClaimLockMissSweepHotkeyXXXXXXXXXXXXXXXXXXXXXXX"
+        token = "claim-lock-miss-sweep-token-at-least-32-characters"
+        await _seed_screener_node(
+            session_maker,
+            node_id="claim-lock-miss-sweep-node",
+            hotkey=hotkey,
+            token=token,
+            screening_concurrency=2,
+        )
+        agent_id = await _seed_agent(session_maker, status=AgentStatus.SCREENING)
+        attempt_id = await _seed_overdue_attempt(
+            session_maker, agent_id=agent_id, screener_hotkey=hotkey
+        )
+        _install_db(app, session_maker)
+
+        async with session_maker() as owner, owner.begin():
+            await owner.execute(
+                select(func.pg_advisory_xact_lock(_SCREENING_CLAIM_LOCK_KEY))
+            )
+            response = await asyncio.wait_for(
+                client.post(
+                    _CLAIM_URL,
+                    headers={
+                        "Authorization": f"Bearer {token}",
+                        "X-Screener-Hotkey": hotkey,
+                    },
+                ),
+                timeout=0.5,
+            )
+
+        assert response.status_code == 200, response.text
+        assert response.json()["items"] == []
+        async with session_maker() as session:
+            attempt = await session.get(ScreeningAttempt, attempt_id)
+        assert attempt is not None and attempt.status == "expired"
+
+    async def test_orphan_past_deadline_during_zero_admission_is_failed_not_expired(
+        self,
+        app: FastAPI,
+        client: httpx.AsyncClient,
+        session_maker: async_sessionmaker[AsyncSession],
+    ) -> None:
+        hotkey = "5OverdueOrphanSweepHotkeyXXXXXXXXXXXXXXXXXXXXXXX"
+        token = "overdue-orphan-sweep-token-at-least-32-characters"
+        await _seed_screener_node(
+            session_maker,
+            node_id="overdue-orphan-sweep-node",
+            hotkey=hotkey,
+            token=token,
+            screening_concurrency=0,
+        )
+        agent_id = await _seed_agent(session_maker, status=AgentStatus.SCREENING)
+        attempt_id = await _seed_overdue_attempt(
+            session_maker, agent_id=agent_id, screener_hotkey=hotkey
+        )
+        now = datetime.now(UTC)
+        async with session_maker() as session, session.begin():
+            session.add(
+                ScreenerHeartbeat(
+                    screener_hotkey=hotkey,
+                    instance_id="overdue-orphan-sweep-worker",
+                    software_version="0.21.0",
+                    protocol_version=4,
+                    policy_version=SCREENING_POLICY_VERSION,
+                    state="polling",
+                    active_agent_id=None,
+                    first_seen_at=now - timedelta(days=1),
+                    reported_at=now - timedelta(seconds=5),
+                    seen_at=now - timedelta(seconds=5),
+                    signature="ab" * 64,
+                )
+            )
+        _install_db(app, session_maker)
+
+        response = await client.post(
+            _CLAIM_URL,
+            headers={"Authorization": f"Bearer {token}", "X-Screener-Hotkey": hotkey},
+        )
+
+        assert response.status_code == 200, response.text
+        assert response.json()["items"] == []
+        async with session_maker() as session:
+            attempt = await session.get(ScreeningAttempt, attempt_id)
+            agent = await session.get(Agent, agent_id)
+        assert attempt is not None
+        assert attempt.status == "failed"
+        assert attempt.reason_code == "worker-lease-orphaned"
+        assert agent is not None and agent.status == AgentStatus.SCREENING_FAILED
 
     async def test_mechanical_admission_claim_uses_its_dedicated_contract_fields(
         self,
