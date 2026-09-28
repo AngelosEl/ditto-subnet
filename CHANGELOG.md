@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.322.1 (2026-09-28)
+
+### Bug Fixes
+
+- **platform**: Label expired screening leases
+  ([#2411](https://github.com/ditto-assistant/ditto-subnet/pull/2411),
+  [`396994a`](https://github.com/ditto-assistant/ditto-subnet/commit/396994a614e29758a1ca34c4d16666f170e225db))
+
+
 ## v0.322.0 (2026-09-28)
 
 ### Bug Fixes
