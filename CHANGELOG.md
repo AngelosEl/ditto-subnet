@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.330.5 (2026-09-29)
+
+### Bug Fixes
+
+- **starter**: Report blocked legacy tool calls separately
+  ([#2552](https://github.com/ditto-assistant/ditto-subnet/pull/2552),
+  [`d916458`](https://github.com/ditto-assistant/ditto-subnet/commit/d9164584d44094c51dd6f852faee12437543a0cf))
+
+
 ## v0.330.4 (2026-09-29)
 
 ### Bug Fixes
