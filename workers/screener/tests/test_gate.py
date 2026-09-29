@@ -290,26 +290,92 @@ async def test_v13_shadow_semantics_require_tool_and_user_specific_memory(
     assert all(marker not in repr(decisions) for marker in memories.values())
 
 
-async def test_v13_incomplete_source_hold_retains_verified_image_without_passing(
-    make_config: Callable[..., ScreenerConfig], tmp_path: Path
+_HELD_FINDING = {
+    "prompt_revision": "l3-sol-adversarial-critic-v3",
+    "risk_level": "high",
+    "confidence": 0.99,
+    "categories": ["cross_user_access"],
+    "evidence": [],
+}
+
+
+def _court_observation(adjudication: dict[str, object]) -> SourceReviewObservation:
+    return SourceReviewObservation(
+        ok=False,
+        risk_level=None,
+        finding_digest="b" * 64,
+        categories=("cross_user_access",),
+        failure_disposition="inconclusive",
+        finding=_HELD_FINDING,
+        adjudication=adjudication,
+    )
+
+
+class _FixedReviewer:
+    def __init__(self, observation: SourceReviewObservation) -> None:
+        self._observation = observation
+
+    async def review(self, *_args: Any, **_kwargs: Any) -> SourceReviewObservation:
+        return self._observation
+
+
+@pytest.mark.parametrize(
+    ("policy_version", "observation", "held"),
+    [
+        pytest.param(
+            13,
+            _court_observation({"decision": "reject", "reason": "proven breach"}),
+            True,
+            id="v13-court-reject",
+        ),
+        pytest.param(
+            13,
+            _court_observation(
+                {"decision": "escalate", "escalation_code": "adjudicator-failed"}
+            ),
+            True,
+            id="v13-court-refusal",
+        ),
+        pytest.param(
+            13,
+            _court_observation({"decision": "clear", "reason": "not reachable"}),
+            False,
+            id="v13-court-clear-awaiting-verification",
+        ),
+        pytest.param(
+            13,
+            SourceReviewObservation(
+                ok=True,
+                risk_level="low",
+                finding_digest="a" * 64,
+                categories=("none",),
+                clearance_certified=False,
+            ),
+            False,
+            id="v13-unadjudicated-hold",
+        ),
+        pytest.param(
+            12,
+            _court_observation({"decision": "reject", "reason": "proven breach"}),
+            False,
+            id="v12-court-reject",
+        ),
+    ],
+)
+async def test_v13_court_hold_retains_verified_image_without_passing(
+    make_config: Callable[..., ScreenerConfig],
+    tmp_path: Path,
+    policy_version: int,
+    observation: SourceReviewObservation,
+    held: bool,
 ) -> None:
+    """Key the held upload on the evidence the real policy engine emits."""
     tarball = _valid_tar()
     gate = _gate_with(make_config(), _ok_run(), tarball=tarball)
-    held = ScreeningDecision(
-        outcome=ScreeningOutcome.QUARANTINE,
-        detail="source review incomplete",
-        manifest_digest="ab" * 32,
-        evidence=(
-            PolicyEvidence(
-                "adjudication", "adjudicated-source-review-escalate", "held"
-            ),
-        ),
-        policy_version=13,
-    )
-    uploads: list[str] = []
-
-    async def evaluate(*_args: Any, **_kwargs: Any) -> ScreeningDecision:
-        return held
+    gate._policy = _review_engine()
+    gate._source_reviewer = _FixedReviewer(observation)  # type: ignore[assignment]
+    held_uploads: list[str] = []
+    passing_uploads: list[str] = []
 
     async def run_and_probe(*_args: Any, **_kwargs: Any) -> tuple[Any, Any]:
         return gate_module._StageResult(True, ""), gate_module._AuditRuntime(
@@ -335,10 +401,12 @@ async def test_v13_incomplete_source_hold_retains_verified_image_without_passing
             image_ref=image_ref,
         )
 
-    async def publish_held(image: BuiltImageArtifact) -> None:
-        uploads.append(image.sha256)
+    async def publish(image: BuiltImageArtifact) -> None:
+        passing_uploads.append(image.sha256)
 
-    gate._policy.evaluate = evaluate  # type: ignore[method-assign]
+    async def publish_held(image: BuiltImageArtifact) -> None:
+        held_uploads.append(image.sha256)
+
     gate._run_and_probe = run_and_probe  # type: ignore[method-assign]
     gate._export_image = export_image  # type: ignore[method-assign]
     async with gate._client:
@@ -349,13 +417,15 @@ async def test_v13_incomplete_source_hold_retains_verified_image_without_passing
             miner_hotkey=_MINER,
             sha256=hashlib.sha256(tarball).hexdigest(),
             download_url=_URL,
-            policy_version=13,
-            publish_image=lambda _image: asyncio.sleep(0),
+            policy_version=policy_version,
+            publish_image=publish,
             publish_held_image=publish_held,
         )
 
     assert result.outcome == ScreeningOutcome.QUARANTINE
-    assert uploads == [hashlib.sha256(b"held image").hexdigest()]
+    assert result.adjudication == observation.adjudication
+    assert passing_uploads == []
+    assert held_uploads == ([hashlib.sha256(b"held image").hexdigest()] if held else [])
     assert not (tmp_path / "held-image.tar").exists()
 
 

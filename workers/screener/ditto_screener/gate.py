@@ -91,6 +91,7 @@ from ditto_screener.policy import (
     ReviewJournal,
     ScreeningDecision,
     ScreeningOutcome,
+    is_held_source_review,
     load_policy_engine,
     source_review_low_clearance_allowed,
 )
@@ -1880,15 +1881,7 @@ class BuildGate:
                 decision, active_audit_runtime.seed_probe
             )
             self._journal.record(context=context, decision=decision)
-            held_source_review = (
-                policy_version == 13
-                and decision.outcome == ScreeningOutcome.QUARANTINE
-                and decision.finding is None
-                and any(
-                    item.code == "adjudicated-source-review-escalate"
-                    for item in decision.evidence
-                )
-            )
+            held_source_review = is_held_source_review(decision)
             image_publisher = (
                 publish_held_image if held_source_review else publish_image
             )

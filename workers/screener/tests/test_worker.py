@@ -33,6 +33,7 @@ from ditto_screener.policy import (
     ScreeningOutcome,
     SourceReviewObservation,
     core_decision,
+    is_held_source_review,
 )
 from ditto_screener.worker import ScreenerWorker
 from ditto_screening_protocol import (
@@ -155,14 +156,7 @@ class _FakeGate:
                     image_ref=f"ditto-screen/{agent_id}:latest",
                 )
             )
-        if (
-            self.result.outcome == ScreeningOutcome.QUARANTINE
-            and publish_held_image is not None
-            and any(
-                item.code == "adjudicated-source-review-escalate"
-                for item in self.result.evidence
-            )
-        ):
+        if publish_held_image is not None and is_held_source_review(self.result):
             await publish_held_image(
                 BuiltImageArtifact(
                     path="/tmp/fake-held-image.tar",
@@ -840,17 +834,35 @@ async def test_v13_source_hold_uploads_image_evidence_without_passing(
 ) -> None:
     agent = uuid4()
     platform = _FakePlatform([])
-    decision = ScreeningDecision(
-        outcome=ScreeningOutcome.QUARANTINE,
-        detail="source review incomplete",
-        manifest_digest="ab" * 32,
-        evidence=(
-            PolicyEvidence(
-                "adjudication", "adjudicated-source-review-escalate", "held"
-            ),
+    # A court refusal carrying an L1/L2 finding, as the real policy emits it.
+    finding = SourceReviewFinding(
+        artifact_sha256="de" * 32,
+        prompt_revision="source-review-v2",
+        risk_level="high",
+        confidence=0.97,
+        categories=["cross_user_access"],
+        summary="Unverified cross-user lead held for the court.",
+    )
+    decision = PolicyEngine(CORE_ONLY_MANIFEST).preexecution_source_decision(
+        SourceReviewObservation(
+            ok=False,
+            risk_level=None,
+            finding_digest=finding.canonical_digest(),
+            categories=("cross_user_access",),
+            failure_disposition="inconclusive",
+            finding=finding.model_dump(mode="json"),
+            adjudication=SourceReviewAdjudication(
+                decision="escalate",
+                reason="the court timed out before a verified finding",
+                escalation_code="adjudicator-failed",
+                model="z-ai/glm-5.3-flash",
+                prompt_revision="adjudicator-v7-policy-v13",
+            ).model_dump(mode="json"),
         ),
         policy_version=13,
     )
+    assert decision.outcome == ScreeningOutcome.QUARANTINE
+    assert decision.finding is not None
     worker = _worker(make_config(), platform, _FakeGate(decision))
 
     await worker._screen_one(_item(agent), policy_version=13)
