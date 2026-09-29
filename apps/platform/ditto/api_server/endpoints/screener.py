@@ -4384,6 +4384,12 @@ def _public_screening_reason(detail: str, reason_code: str | None = None) -> str
             "is operator-owned and is retried automatically with backoff for a "
             "limited time, then held for an operator retry."
         )
+    if reason_code == "worker-claim-not-started":
+        return (
+            "The screening worker released this submission before starting it. "
+            "This is operator-owned and is retried automatically with backoff for "
+            "a limited time, then held for an operator retry."
+        )
     if reason_code == "docker-build" or normalized.startswith("build failed"):
         if (
             "couldn't read" in normalized or "could not read" in normalized

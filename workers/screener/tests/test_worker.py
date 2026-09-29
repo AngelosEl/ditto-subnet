@@ -1757,7 +1757,161 @@ async def test_stop_during_review_finishes_the_signed_verdict(
     gate.screen = screen  # type: ignore[method-assign]
     worker = _worker(make_config(), platform, gate)
     await asyncio.wait_for(worker.run_forever(stop), timeout=2.0)
-    assert [verdict["agent_id"] for verdict in platform.verdicts] == [first]
+    assert gate.calls == [first]
+    assert [verdict["agent_id"] for verdict in platform.verdicts] == [first, second]
+    assert platform.verdicts[0]["passed"] is True
+    # The second lease was durable but never started: settle it, do not drop it.
+    _assert_claim_not_started(platform.verdicts[1], second)
+
+
+def _assert_claim_not_started(verdict: dict[str, Any], agent_id: UUID) -> None:
+    assert verdict["agent_id"] == agent_id
+    assert verdict["passed"] is False
+    assert verdict["outcome"] == ScreenResultOutcome.RETRYABLE_INFRA
+    assert verdict["reason_code"] == "worker-claim-not-started"
+    ScreenResultRequest(
+        screener_hotkey=_MINER,
+        **{key: value for key, value in verdict.items() if key != "agent_id"},
+    )
+
+
+async def test_no_claim_when_stopped_before_claim(
+    make_config: Callable[..., ScreenerConfig],
+) -> None:
+    """A drain SIGTERM during the pre-claim awaits must not take a lease."""
+    platform = _FakePlatform([[_item(uuid4())]])
+    stop = asyncio.Event()
+    original = platform.get_required_policy_version
+
+    async def required_policy() -> int:
+        stop.set()
+        return await original()
+
+    platform.get_required_policy_version = required_policy  # type: ignore[method-assign]
+    gate = _FakeGate(_decision(ScreeningOutcome.PASS))
+    worker = _worker(make_config(), platform, gate)
+
+    assert await worker._sweep(stop) == 0
+    assert platform.claim_calls == 0
+    assert platform.verdicts == []
+    assert gate.calls == []
+
+
+async def test_stop_set_during_claim_still_screens_claimed_item(
+    make_config: Callable[..., ScreenerConfig],
+) -> None:
+    agent_id = uuid4()
+    item = _item(agent_id)
+    platform = _FakePlatform([[item]])
+    stop = asyncio.Event()
+    original = platform.claim_next
+
+    async def claim_next(**kwargs: Any) -> ScreenerQueueResponse:
+        stop.set()
+        return await original(**kwargs)
+
+    platform.claim_next = claim_next  # type: ignore[method-assign]
+    gate = _FakeGate(_decision(ScreeningOutcome.PASS))
+    worker = _worker(make_config(), platform, gate)
+
+    assert await worker._sweep(stop) == 1
+    assert gate.calls == [agent_id]
+    assert len(platform.verdicts) == 1
+    assert platform.verdicts[0]["attempt_id"] == item.attempt_id
+    assert platform.verdicts[0]["passed"] is True
+
+
+async def test_policy_change_during_claim_fails_claimed_items_explicitly(
+    make_config: Callable[..., ScreenerConfig],
+) -> None:
+    agent_id = uuid4()
+    item = _item(agent_id, policy_version=SCREENING_FLOOR_POLICY_VERSION)
+    platform = _FakePlatform([])
+    platform.required_policy_version = SCREENING_FLOOR_POLICY_VERSION
+
+    async def claim_next(**_: Any) -> ScreenerQueueResponse:
+        platform.claim_calls += 1
+        return ScreenerQueueResponse(
+            items=[item],
+            count=1,
+            required_policy_version=SCREENING_FLOOR_POLICY_VERSION + 1,
+        )
+
+    platform.claim_next = claim_next  # type: ignore[method-assign]
+    gate = _FakeGate(_decision(ScreeningOutcome.PASS))
+    worker = _worker(make_config(), platform, gate)
+
+    assert await worker._sweep(asyncio.Event()) == 0
+    assert gate.calls == []
+    assert platform.artifact_calls == []
+    assert len(platform.verdicts) == 1
+    verdict = platform.verdicts[0]
+    _assert_claim_not_started(verdict, agent_id)
+    assert verdict["attempt_id"] == item.attempt_id
+    # Platform binds the attempt to its claimed policy and accepts no other.
+    assert verdict["policy_version"] == SCREENING_FLOOR_POLICY_VERSION
+    assert (
+        "changed screening policy during claim" in (verdict["private_failure_detail"])
+    )
+
+
+async def test_out_of_range_item_policy_is_failed_not_dropped(
+    make_config: Callable[..., ScreenerConfig],
+) -> None:
+    agent_id = uuid4()
+    item = _item(agent_id, policy_version=SCREENING_POLICY_VERSION + 1)
+    platform = _FakePlatform([[item]])
+    gate = _FakeGate(_decision(ScreeningOutcome.PASS))
+    worker = _worker(make_config(), platform, gate)
+
+    assert await worker._sweep(asyncio.Event()) == 0
+    assert gate.calls == []
+    assert platform.artifact_calls == []
+    assert len(platform.verdicts) == 1
+    verdict = platform.verdicts[0]
+    _assert_claim_not_started(verdict, agent_id)
+    assert verdict["attempt_id"] == item.attempt_id
+    assert verdict["policy_version"] == SCREENING_POLICY_VERSION + 1
+    assert (
+        "outside this worker's supported range" in (verdict["private_failure_detail"])
+    )
+
+
+async def test_invalid_claim_response_fails_recoverable_attempts(
+    make_config: Callable[..., ScreenerConfig],
+) -> None:
+    from ditto_screener.platform import ClaimedAttemptRef, ClaimResponseInvalid
+
+    agent_id, attempt_id = uuid4(), uuid4()
+    platform = _FakePlatform([])
+
+    async def claim_next(**_: Any) -> ScreenerQueueResponse:
+        platform.claim_calls += 1
+        raise ClaimResponseInvalid(
+            "screening claim response invalid: items.0.name: Field required",
+            (
+                ClaimedAttemptRef(
+                    agent_id=agent_id,
+                    attempt_id=attempt_id,
+                    policy_version=SCREENING_POLICY_VERSION,
+                ),
+                ClaimedAttemptRef(agent_id=uuid4()),
+            ),
+        )
+
+    platform.claim_next = claim_next  # type: ignore[method-assign]
+    gate = _FakeGate(_decision(ScreeningOutcome.PASS))
+    worker = _worker(make_config(), platform, gate)
+
+    assert await worker._sweep(asyncio.Event()) == 0
+    assert gate.calls == []
+    # The ref without an attempt id has nothing to sign against.
+    assert len(platform.verdicts) == 1
+    verdict = platform.verdicts[0]
+    _assert_claim_not_started(verdict, agent_id)
+    assert verdict["attempt_id"] == attempt_id
+    assert verdict["policy_version"] == SCREENING_POLICY_VERSION
+    assert "claim response invalid" in verdict["private_failure_detail"]
 
 
 async def test_local_drain_lease_follows_heartbeat_renewal_and_clears(

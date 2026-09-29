@@ -637,10 +637,12 @@ class ScreeningAttempt(Base):
             "screening_attempts_infra_failed_idx",
             "finished_at",
             postgresql_where=text(
-                "status = 'failed' AND reason_code = 'docker-build-infrastructure'"
+                "status = 'failed' AND reason_code IN "
+                "('docker-build-infrastructure', 'worker-claim-not-started')"
             ),
             sqlite_where=text(
-                "status = 'failed' AND reason_code = 'docker-build-infrastructure'"
+                "status = 'failed' AND reason_code IN "
+                "('docker-build-infrastructure', 'worker-claim-not-started')"
             ),
         ),
         Index(

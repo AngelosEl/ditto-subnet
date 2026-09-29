@@ -20,7 +20,7 @@ import os
 import re
 import socket
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, cast
@@ -47,6 +47,7 @@ from ditto_screener.heartbeat import (
     collect_host_specs,
     probe_docker_health,
 )
+from ditto_screener.platform import ClaimedAttemptRef, ClaimResponseInvalid
 from ditto_screener.policy import (
     PolicyEvidence,
     ScreeningOutcome,
@@ -99,6 +100,9 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 EXACT_CROSS_MINER_DUPLICATE = "exact-cross-miner-duplicate"
+# A durable claim this worker settled before fetching or running anything of
+# the artifact. Platform retries it automatically (INFRA_AUTO_RETRY_REASON_CODES).
+CLAIM_NOT_STARTED_REASON_CODE = "worker-claim-not-started"
 
 
 # Shadow mode appends this after the deciding evidence. It records sandbox
@@ -599,16 +603,38 @@ class ScreenerWorker:
             # Correct the startup/previous-policy heartbeat before claiming so
             # the capacity controller can admit this node during a rollback.
             await self._report_heartbeat("polling", force=True)
-        queue = await self._platform.claim_next(
-            policy_version=screen_version,
-            review_settings=review_settings,
-            instance_id=self._instance_id,
-        )
+        # A drain's SIGTERM can land during any await above. Once claim_next
+        # returns the lease is durable, so a stopping worker must not claim.
+        if stop.is_set():
+            return 0
+        try:
+            queue = await self._platform.claim_next(
+                policy_version=screen_version,
+                review_settings=review_settings,
+                instance_id=self._instance_id,
+            )
+        except ClaimResponseInvalid as error:
+            logger.error("%s", error)
+            await self._fail_unstarted_claims(
+                error.attempts,
+                policy_version=screen_version,
+                review_settings=review_settings,
+                error=error,
+            )
+            return 0
         if queue.required_policy_version != required_policy:
-            raise PlatformError(
+            policy_changed = PlatformError(
                 "platform changed screening policy during claim: expected "
                 f"{required_policy}, received {queue.required_policy_version}"
             )
+            logger.warning("%s", policy_changed)
+            await self._fail_unstarted_claims(
+                queue.items,
+                policy_version=screen_version,
+                review_settings=review_settings,
+                error=policy_changed,
+            )
+            return 0
         if not queue.items:
             from ditto_screener.l2_report_canary import consume as consume_l2_canary
 
@@ -664,19 +690,34 @@ class ScreenerWorker:
                 await heartbeat
         logger.info("screener sweep: %d agent(s) to screen", len(queue.items))
         done = 0
-        for item in queue.items:
-            if stop.is_set():
-                break
+        for index, item in enumerate(queue.items):
+            # The first claimed item is always screened, even when stop arrived
+            # during the claim: _screen_one publishes the lease the drain waits
+            # on. Any further item has not started and is settled instead.
             item_policy_version = item.policy_version or screen_version
-            if not (
+            unstarted_error: PlatformError | None = None
+            if index and stop.is_set():
+                unstarted_error = PlatformError(
+                    "screener worker stopped before starting this claimed attempt"
+                )
+            elif not (
                 SCREENING_FLOOR_POLICY_VERSION
                 <= item_policy_version
                 <= SCREENING_POLICY_VERSION
             ):
-                raise PlatformError(
+                unstarted_error = PlatformError(
                     "claimed item policy is outside this worker's supported range: "
                     f"{item_policy_version}"
                 )
+                logger.warning("%s", unstarted_error)
+            if unstarted_error is not None:
+                await self._fail_unstarted_claims(
+                    queue.items[index:],
+                    policy_version=screen_version,
+                    review_settings=review_settings,
+                    error=unstarted_error,
+                )
+                return done
             await self._screen_one(
                 item,
                 policy_version=item_policy_version,
@@ -695,7 +736,12 @@ class ScreenerWorker:
         """Gate one agent and post its signed verdict. Never raises."""
         agent_id = item.agent_id
         if item.attempt_id is None:
-            logger.error("claimed agent_id=%s without a screening attempt id", agent_id)
+            # Platform creates an attempt for every claim; without one there
+            # is nothing to screen under or sign a result against.
+            logger.error(
+                "claimed agent_id=%s without a screening attempt id; skipping it",
+                agent_id,
+            )
             return
         attempt_id = item.attempt_id
         self._active_agent_id = agent_id
@@ -1260,10 +1306,43 @@ class ScreenerWorker:
                 self._gate.apply_review_settings(normal_review_settings)
             await self._report_heartbeat("polling", force=True)
 
+    async def _fail_unstarted_claims(
+        self,
+        items: Sequence[ScreenerQueueItem | ClaimedAttemptRef],
+        *,
+        policy_version: int,
+        review_settings: EffectiveReviewSettings,
+        error: Exception,
+    ) -> None:
+        """Settle claims this worker will not screen instead of dropping them.
+
+        Each lease is durable once ``claim_next`` returns. Dropped, it stays
+        ``running`` until Platform infers ``worker-lease-orphaned`` and parks
+        the agent for a manual retry. Nothing of the artifact was fetched or
+        run, so this fleet-owned code is retried automatically. Each result is
+        signed under the attempt's own policy, the only one Platform accepts.
+        """
+        for item in items:
+            if item.attempt_id is None:
+                logger.error(
+                    "claimed agent_id=%s without a screening attempt id; "
+                    "nothing to settle",
+                    item.agent_id,
+                )
+                continue
+            await self._submit_claim_failure(
+                item=item,
+                attempt_id=item.attempt_id,
+                policy_version=item.policy_version or policy_version,
+                effective_review_settings=review_settings,
+                reason_code=CLAIM_NOT_STARTED_REASON_CODE,
+                error=error,
+            )
+
     async def _submit_claim_failure(
         self,
         *,
-        item: ScreenerQueueItem,
+        item: ScreenerQueueItem | ClaimedAttemptRef,
         attempt_id: UUID,
         policy_version: int,
         effective_review_settings: EffectiveReviewSettings,

@@ -13,6 +13,7 @@ import contextlib
 import fcntl
 import logging
 import os
+import re
 import time
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
@@ -21,6 +22,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from uuid import UUID, uuid4
 
 import httpx
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 from ditto_screener.enrollment import (
     NodeCredential,
@@ -58,6 +60,7 @@ from ditto_screening_protocol import (
     ScreenedImageUploadRequest,
     ScreenedImageUploadResponse,
     ScreenerQueueResponse,
+    ScreenerReviewSettingsOverride,
     ScreenEvidenceItem,
     ScreenResultOutcome,
     ScreenResultRequest,
@@ -127,6 +130,48 @@ def _credential_needs_rotation(credential: NodeCredential) -> bool:
 
 def _is_transient_platform_status(status_code: int) -> bool:
     return status_code in {408, 425, 429} or status_code >= 500
+
+
+_UUID_RE = re.compile(
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.IGNORECASE
+)
+
+
+class ClaimedAttemptRef(BaseModel):
+    """What settling one claimed attempt needs, read leniently from a claim.
+
+    Field names and defaults match ``ScreenerQueueItem``; everything else in
+    the item is ignored, so a wire-contract skew elsewhere in the item still
+    leaves the attempt recoverable.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    agent_id: UUID
+    attempt_id: UUID | None = None
+    policy_version: int | None = None
+    build_only: bool = False
+    deferred_source_review: bool = False
+    policy_only: bool = False
+    review_settings_override: ScreenerReviewSettingsOverride | None = None
+
+
+class _ClaimedAttemptRefs(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    items: list[ClaimedAttemptRef]
+
+
+class ClaimResponseInvalid(PlatformError):
+    """A claim Platform committed but this build could not parse.
+
+    ``attempts`` are the leases recovered from the response, which the worker
+    must settle instead of leaving them to the orphan sweeper.
+    """
+
+    def __init__(self, message: str, attempts: tuple[ClaimedAttemptRef, ...]) -> None:
+        super().__init__(message)
+        self.attempts = attempts
 
 
 class PlatformClient:
@@ -509,7 +554,25 @@ class PlatformClient:
             )
         # The nested signed V13 runtime lease keeps UUID fields strict. Parse
         # the HTTP JSON bytes as JSON, where UUID strings are the wire form.
-        return ScreenerQueueResponse.model_validate_json(resp.content)
+        try:
+            return ScreenerQueueResponse.model_validate_json(resp.content)
+        except ValidationError as error:
+            # Platform committed these leases before answering. Recover what
+            # settling them needs rather than losing the attempt ids here.
+            problems = "; ".join(
+                f"{'.'.join(map(str, problem['loc']))}: {problem['msg']}"
+                for problem in error.errors(include_url=False, include_input=False)[:3]
+            )
+            message = f"screening claim response invalid: {problems}"
+            try:
+                refs = _ClaimedAttemptRefs.model_validate_json(resp.content).items
+            except ValidationError:
+                logger.error(
+                    "unrecoverable screening claim response; ids=%s",
+                    ",".join(sorted(set(_UUID_RE.findall(resp.text)))),
+                )
+                raise ClaimResponseInvalid(message, ()) from error
+            raise ClaimResponseInvalid(message, tuple(refs)) from error
 
     async def get_artifact(
         self, agent_id: UUID, *, attempt_id: UUID | None = None

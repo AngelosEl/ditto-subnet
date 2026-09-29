@@ -7514,6 +7514,8 @@ async def agent_summary(
 # names no lane the public pipeline can vouch for.
 _ADMISSION_LANE_BY_REASON_CODE: dict[str, PublicAdmissionLane] = {
     "docker-build-infrastructure": "build",
+    # Settled before the artifact was fetched; the retry starts at the build.
+    "worker-claim-not-started": "build",
     "targon-build-unavailable": "build",
     "cloudrun-build-unavailable": "build",
     "targon-runtime-unavailable": "runtime_smoke",

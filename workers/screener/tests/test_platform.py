@@ -31,6 +31,7 @@ from ditto_screener.errors import (
 from ditto_screener.heartbeat import ScreenerHeartbeatRequest
 from ditto_screener.platform import (
     _TRANSIENT_PLATFORM_RETRY_DELAYS,
+    ClaimResponseInvalid,
     PlatformClient,
 )
 from ditto_screener.review_settings import bootstrap_review_settings
@@ -246,6 +247,88 @@ async def test_claim_next_parses_strict_v13_runtime_lease_from_json_wire(
         )
     assert response.items[0].scored_runtime_evidence is not None
     assert response.items[0].scored_runtime_evidence.attempt_id == attempt_id
+
+
+async def test_invalid_claim_response_keeps_the_committed_attempt_ids(
+    make_config: Callable[..., ScreenerConfig],
+) -> None:
+    """A wire-contract skew must not lose the leases Platform already committed."""
+    attempt_id = uuid4()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/v1/screener/claim"
+        return httpx.Response(
+            200,
+            json={
+                "items": [
+                    {
+                        "agent_id": str(_AGENT),
+                        "bench_version": 13,
+                        "miner_hotkey": _MINER,
+                        "name": "v13-agent",
+                        "sha256": "de" * 32,
+                        "status": "screening",
+                        "created_at": "2026-09-25T01:52:23Z",
+                        "attempt_id": str(attempt_id),
+                        "lease_deadline": "2026-09-25T02:02:28Z",
+                        "policy_version": 13,
+                        "build_only": True,
+                        "deferred_source_review": True,
+                        # A nested shape this build does not understand.
+                        "scored_runtime_evidence": {"lease": [str(attempt_id)]},
+                    }
+                ],
+                "count": 1,
+                "required_policy_version": 13,
+            },
+        )
+
+    client, http = _make_client(make_config(), handler)
+    async with http:
+        with pytest.raises(ClaimResponseInvalid) as raised:
+            await client.claim_next(
+                policy_version=13,
+                review_settings=bootstrap_review_settings(make_config()),
+                instance_id="worker-1",
+            )
+    assert isinstance(raised.value, PlatformError)
+    assert "scored_runtime_evidence" in str(raised.value)
+    [ref] = raised.value.attempts
+    assert ref.agent_id == _AGENT
+    assert ref.attempt_id == attempt_id
+    assert ref.policy_version == 13
+    assert ref.build_only is True
+    assert ref.deferred_source_review is True
+    assert ref.policy_only is False
+    assert ref.review_settings_override is None
+
+
+async def test_unrecoverable_claim_response_logs_only_ids(
+    make_config: Callable[..., ScreenerConfig], caplog: pytest.LogCaptureFixture
+) -> None:
+    attempt_id = uuid4()
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "items": [{"attempt_id": str(attempt_id), "name": "secret-name"}],
+                "count": 1,
+                "required_policy_version": 13,
+            },
+        )
+
+    client, http = _make_client(make_config(), handler)
+    async with http:
+        with pytest.raises(ClaimResponseInvalid) as raised:
+            await client.claim_next(
+                policy_version=13,
+                review_settings=bootstrap_review_settings(make_config()),
+                instance_id="worker-1",
+            )
+    assert raised.value.attempts == ()
+    assert str(attempt_id) in caplog.text
+    assert "secret-name" not in caplog.text
 
 
 async def test_policy_preflight_is_read_only(
