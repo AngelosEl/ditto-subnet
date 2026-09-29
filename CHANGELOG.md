@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.327.0 (2026-09-29)
+
+### Features
+
+- **v13**: Bind tool receipt retries to model emissions
+  ([#2531](https://github.com/ditto-assistant/ditto-subnet/pull/2531),
+  [`f3a9f9b`](https://github.com/ditto-assistant/ditto-subnet/commit/f3a9f9b7620eeb2111d55807c2f12ecbaf21eaf7))
+
+
 ## v0.326.0 (2026-09-29)
 
 ### Features
