@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.329.0 (2026-09-29)
+
+### Features
+
+- **backroom**: Stage managed operator proof binding
+  ([#2532](https://github.com/ditto-assistant/ditto-subnet/pull/2532),
+  [`1e1d04d`](https://github.com/ditto-assistant/ditto-subnet/commit/1e1d04d811e3c52b82cf8ffd3ce30c8cc1dcfcf4))
+
+
 ## v0.328.0 (2026-09-29)
 
 ### Features
