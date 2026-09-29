@@ -1358,6 +1358,17 @@ def test_keep_preference_findings_never_leak_matched_source_text() -> None:
 
 
 _STARTER_KIT = Path(__file__).resolve().parents[3] / "miners" / "dittobench-starter-kit"
+
+
+def _comment_masked(text: str, path: str) -> str:
+    # Language-aware masking (#2457) makes the member path a required argument.
+    # Accept both signatures so this test does not depend on merge order.
+    try:
+        return mask_comments(text, path)  # type: ignore[call-arg]
+    except TypeError:
+        return mask_comments(text)
+
+
 _ZERO_TOKEN_REPLY = """\
 pub fn build_reply(question: &str) -> RunResponse {
     RunResponse {
@@ -1468,7 +1479,7 @@ def test_raw_starter_kit_fingerprints_skip_test_items_and_script_tests() -> None
         except UnicodeDecodeError:
             continue
     test_lines = {
-        path: rust_test_lines(mask_comments(text).splitlines())
+        path: rust_test_lines(_comment_masked(text, path).splitlines())
         for path, text in files
         if path.endswith(".rs")
     }
