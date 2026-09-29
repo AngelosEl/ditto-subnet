@@ -105,6 +105,8 @@ def citation_admissibility(
     path: str,
     text: str | None,
     line: int,
+    *,
+    runtime_paths: frozenset[str] = frozenset(),
 ) -> Admissibility:
     """Classify one ``path:line`` citation against the submitted source.
 
@@ -112,15 +114,22 @@ def citation_admissibility(
     member is opaque. An opaque member keeps its citation: the path is proven
     and the line is unverifiable by design, so refusing it would invent a
     false negative.
+
+    ``runtime_paths`` are members the build or served code explicitly makes
+    executable (a Cargo target, ``include!``/``#[path]``, a script the
+    Dockerfile runs). A ``tests/`` or ``benches/`` directory name does not make
+    such a file inert, so it is exempt from the test-path rule; the comment,
+    blank, and ``#[cfg(test)]`` checks still apply.
     """
-    if _TEST_PATH.search(path.removeprefix("./")):
+    normalized = path.removeprefix("./")
+    if _TEST_PATH.search(normalized) and normalized not in runtime_paths:
         return Admissibility(False, "test-only-path")
     if text is None:
         return ADMISSIBLE
     raw_lines = text.splitlines()
     if not 1 <= line <= len(raw_lines):
         return ADMISSIBLE
-    code_lines = mask_comments(text).splitlines()
+    code_lines = mask_comments(text, normalized).splitlines()
     code_lines.extend([""] * (len(raw_lines) - len(code_lines)))
     reason = _inert_reason(code_lines[line - 1], raw_lines[line - 1])
     if reason:

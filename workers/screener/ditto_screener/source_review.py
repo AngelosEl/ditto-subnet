@@ -2445,6 +2445,17 @@ class TarSourceRepository:
                 seen.add(normalized)
                 members.append(_Member(normalized, member.name, member.size))
         self._members = {member.name: member for member in members}
+        self._runtime_paths: frozenset[str] | None = None
+
+    def runtime_paths(self) -> frozenset[str]:
+        """Members the build or served code explicitly makes executable.
+
+        Computed once: the archive members are immutable for the lifetime of
+        the repository.
+        """
+        if self._runtime_paths is None:
+            self._runtime_paths = self._explicit_runtime_paths()
+        return self._runtime_paths
 
     def _explicit_runtime_paths(self) -> frozenset[str]:
         """Resolve Cargo-declared and Rust-included source outside normal roots.
@@ -2688,7 +2699,7 @@ class TarSourceRepository:
             "emulation_fingerprints": find_benchmark_emulation_fingerprints(readable),
             "unmatchable_category_guards": guard_report(
                 find_unmatchable_category_guards(
-                    (path, mask_comments(text)) for path, text in readable
+                    (path, mask_comments(text, path)) for path, text in readable
                 )
             ),
             "generator_mirroring": self._generator_mirroring_analysis(readable),
@@ -2802,7 +2813,7 @@ class TarSourceRepository:
                 trusted_digests.setdefault(path, set()).add(digest)
         bytes_scanned = 0
         members_considered = 0
-        runtime_paths = self._explicit_runtime_paths()
+        runtime_paths = self.runtime_paths()
         all_readable: dict[str, str] = {}
         trusted_paths: set[str] = set()
         with tarfile.open(self._archive_path, mode="r:gz") as archive:
@@ -4373,7 +4384,10 @@ def _parse_review(
         cited_line = item["line"]
         assert isinstance(cited_line, int)
         verdict = citation_admissibility(
-            cited_path, repository.member_text(cited_path), cited_line
+            cited_path,
+            repository.member_text(cited_path),
+            cited_line,
+            runtime_paths=repository.runtime_paths(),
         )
         if verdict.admissible:
             admissible_evidence.append(item)

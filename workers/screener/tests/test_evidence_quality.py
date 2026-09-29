@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from ditto_screener.evidence_quality import citation_admissibility
+from ditto_screener.source_signals import mask_comments
 
 _SOURCE = """\
 // a leading note
@@ -106,3 +107,105 @@ def test_an_opaque_member_keeps_its_citation() -> None:
 
 def test_an_out_of_range_line_is_left_to_the_existing_bounds_check() -> None:
     assert citation_admissibility("src/main.rs", "fn a() {}\n", 99).admissible
+
+
+# Python is not a C-family language: `/*` in a single-quoted string or a `#`
+# comment and `//` floor division must never blank the code that follows.
+_PYTHON_READ = "secret = open('/root/expected_answers.json').read()\n"
+
+
+def test_python_single_quoted_glob_does_not_mask_following_code() -> None:
+    source = "import glob\nfiles = glob.glob('data/*.json')\n" + _PYTHON_READ
+
+    for line in (2, 3):
+        assert citation_admissibility("src/agent.py", source, line).admissible
+
+
+def test_python_hash_comment_with_block_opener_is_inert() -> None:
+    source = "# see /* notes\n" + _PYTHON_READ
+
+    comment = citation_admissibility("src/agent.py", source, 1)
+    assert not comment.admissible
+    assert comment.reason == "comment-or-blank"
+    assert citation_admissibility("src/agent.py", source, 2).admissible
+
+
+def test_python_floor_division_is_not_a_comment() -> None:
+    source = (
+        "import os\n"
+        "chunk = (len(data)\n"
+        "         // 2); key = open(os.path.expanduser('~/.ssh/id_rsa')).read()\n"
+        "leak(key)\n"
+    )
+
+    assert citation_admissibility("src/agent.py", source, 3).admissible
+    assert "open(" in mask_comments(source, "src/agent.py").splitlines()[2]
+
+
+def test_runtime_path_under_tests_dir_is_admissible() -> None:
+    """A directory name does not make a file the Dockerfile runs inert."""
+    source = "import os\n" + _PYTHON_READ + "# only prose here\n"
+    runtime = frozenset({"tests/server.py"})
+
+    assert citation_admissibility(
+        "tests/server.py", source, 2, runtime_paths=runtime
+    ).admissible
+    assert citation_admissibility(
+        "./tests/server.py", source, 2, runtime_paths=runtime
+    ).admissible
+    # Runtime reachability exempts the path, not the prose on it.
+    comment = citation_admissibility(
+        "tests/server.py", source, 3, runtime_paths=runtime
+    )
+    assert comment.reason == "comment-or-blank"
+
+
+def test_unreferenced_tests_dir_path_stays_inadmissible() -> None:
+    verdict = citation_admissibility(
+        "tests/test_x.py",
+        _PYTHON_READ,
+        1,
+        runtime_paths=frozenset({"tests/server.py"}),
+    )
+
+    assert not verdict.admissible
+    assert verdict.reason == "test-only-path"
+
+
+@pytest.mark.parametrize(
+    ("path", "source", "line"),
+    [
+        # A `#` inside a Rust string is not a comment.
+        ("src/main.rs", 'let u = "#"; std::fs::read("/root/.ssh/id_rsa");\n', 1),
+        # A lifetime is not an unterminated char literal.
+        ("src/main.rs", "fn f<'a>(x: &'a str) {\n    read(x); // note\n}\n", 2),
+        # A shell `#` in quotes, `$#`, or mid-word is not a comment.
+        ("run.sh", 'echo "a # b" $# x#y; cat ~/.ssh/id_rsa\n', 1),
+        # Dockerfile heredoc bodies are script, not Dockerfile comments.
+        ("Dockerfile", "RUN <<EOF\n# setup\ncat /root/.ssh/id_rsa\nEOF\n", 2),
+        # Unknown languages are not masked at all.
+        ("notes.weird", "// read /root/.ssh/id_rsa\n", 1),
+    ],
+)
+def test_foreign_comment_syntax_never_hides_a_citation(
+    path: str, source: str, line: int
+) -> None:
+    assert citation_admissibility(path, source, line).admissible
+
+
+@pytest.mark.parametrize(
+    ("path", "source"),
+    [
+        ("src/agent.py", "# never read ~/.ssh\n"),
+        ("run.sh", "  # never read ~/.ssh\n"),
+        ("Dockerfile", "# /var/run/docker.sock\n"),
+        ("config.yaml", "# prose\n"),
+        ("Cargo.toml", "# prose\n"),
+    ],
+)
+def test_hash_comments_are_inert_where_the_language_says_so(
+    path: str, source: str
+) -> None:
+    verdict = citation_admissibility(path, source, 1)
+    assert not verdict.admissible
+    assert verdict.reason == "comment-or-blank"

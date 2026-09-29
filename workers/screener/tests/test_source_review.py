@@ -6249,3 +6249,110 @@ def test_thin_clean_ledger_still_holds() -> None:
     assert ledger_disposition([], concern_hold_count=3, clear_min_notes=3) == (
         "inconclusive"
     )
+
+
+def _high_risk_review(path: str, lines: tuple[int, ...]) -> dict[str, object]:
+    return _with_policy_v10_invariants(
+        {
+            "risk_level": "high",
+            "confidence": 0.97,
+            "categories": ["benchmark_emulation"],
+            "evidence": [
+                {"path": path, "line": line, "category": "benchmark_emulation"}
+                for line in lines
+            ],
+            "summary": "Served path returns stored answers instead of a model result.",
+        }
+    )
+
+
+def _production_engine_decision(observation: object) -> dict[str, object]:
+    finding = getattr(observation, "finding", None)
+    assert isinstance(finding, dict)
+    decisions = finding["invariant_assessment"]["decisions"]
+    return next(
+        decision
+        for decision in decisions
+        if decision["invariant"] == SourceReviewInvariant.PRODUCTION_ENGINE.value
+    )
+
+
+def test_python_high_risk_finding_after_single_quoted_glob_stays_high(
+    tmp_path: Path,
+) -> None:
+    """A Python `'data/*.json'` must not blank the code it precedes.
+
+    The C lexer read the `/*` as a block comment that never closed, so every
+    citation below it became "comment-or-blank", the finding was demoted to
+    low, and its BREACH was rewritten to PASS/UNREACHABLE_NONRUNTIME_CODE.
+    """
+    agent = (
+        "import glob\n"
+        "FIXTURES = glob.glob('data/*.json')\n"
+        "def answer(case_id):\n"
+        "    return open('/root/expected_answers.json').read()  # stored\n"
+    )
+    repo = TarSourceRepository(
+        str(
+            _archive_files(
+                tmp_path,
+                {
+                    "Dockerfile": b'FROM python:3.12\nCMD ["python", "src/agent.py"]\n',
+                    "src/agent.py": agent.encode(),
+                },
+            )
+        )
+    )
+
+    observation = source_review_module._parse_review(
+        _high_risk_review("src/agent.py", (3, 4)),
+        artifact_sha256=_SHA,
+        repository=repo,
+    )
+
+    assert observation.risk_level == "high"
+    assert observation.categories == ("benchmark_emulation",)
+    decision = _production_engine_decision(observation)
+    assert decision["disposition"] == SourceReviewInvariantDisposition.BREACH.value
+    assert decision["pass_clause"] is None
+
+
+_SERVE_SCRIPT = b"#!/bin/sh\n# serve the stored answers\nexec cat /root/answers.json\n"
+
+
+def test_runtime_script_under_tests_dir_keeps_its_citation(tmp_path: Path) -> None:
+    """A script the Dockerfile runs is runtime code whatever its directory."""
+    repo = TarSourceRepository(
+        str(
+            _archive_files(
+                tmp_path,
+                {
+                    "Dockerfile": (
+                        b"FROM alpine\nCOPY tests/serve.sh /serve.sh\n"
+                        b'ENTRYPOINT ["/serve.sh"]\n'
+                    ),
+                    "tests/serve.sh": _SERVE_SCRIPT,
+                    "tests/fixture.sh": _SERVE_SCRIPT,
+                },
+            )
+        )
+    )
+    assert "tests/serve.sh" in repo.runtime_paths()
+    assert "tests/fixture.sh" not in repo.runtime_paths()
+
+    served = source_review_module._parse_review(
+        _high_risk_review("tests/serve.sh", (2, 3)),
+        artifact_sha256=_SHA,
+        repository=repo,
+    )
+    unreferenced = source_review_module._parse_review(
+        _high_risk_review("tests/fixture.sh", (2, 3)),
+        artifact_sha256=_SHA,
+        repository=repo,
+    )
+
+    assert served.risk_level == "high"
+    # The shell comment is still prose; only the command is evidence.
+    assert [item["line"] for item in served.finding["evidence"]] == [3]
+    assert unreferenced.risk_level == "low"
+    assert unreferenced.categories == ("none",)
