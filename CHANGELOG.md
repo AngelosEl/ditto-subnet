@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.330.8 (2026-09-29)
+
+### Bug Fixes
+
+- **screener**: Require source read before L2-only safe result
+  ([#2570](https://github.com/ditto-assistant/ditto-subnet/pull/2570),
+  [`cc468cf`](https://github.com/ditto-assistant/ditto-subnet/commit/cc468cff5c08a5f5a0411124796b402261e89ad3))
+
+
 ## v0.330.7 (2026-09-29)
 
 ### Bug Fixes
