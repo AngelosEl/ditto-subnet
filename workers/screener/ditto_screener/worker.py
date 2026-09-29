@@ -28,7 +28,11 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 from pydantic import ValidationError
 
 from ditto_screener import __version__
-from ditto_screener.errors import PlatformError
+from ditto_screener.errors import (
+    PlatformAuthOnlyFailure,
+    PlatformError,
+    PlatformRejected,
+)
 from ditto_screener.gate import LeaseDeadline
 from ditto_screener.heartbeat import (
     DockerHealth,
@@ -1170,12 +1174,31 @@ class ScreenerWorker:
             )
         except PlatformError as error:
             if result_submission_started:
-                # A late/conflicting verdict (409) or exhausted transient retry:
-                # the original signed request may already have reached Platform.
-                # Never replace it with a different fallback verdict.
                 logger.warning(
                     "verdict for agent_id=%s not applied: %s", agent_id, error
                 )
+                # A definitive validation rejection or an auth-only failure
+                # can be reported immediately. A plain PlatformError may hide
+                # an accepted verdict. A 409 can follow an accepted request
+                # whose response was lost, so never replace that verdict.
+                fallback_reason = None
+                if isinstance(error, PlatformRejected) and error.status_code in {
+                    400,
+                    413,
+                    422,
+                }:
+                    fallback_reason = "worker-verdict-rejected"
+                elif isinstance(error, PlatformAuthOnlyFailure):
+                    fallback_reason = "worker-verdict-auth-failed"
+                if fallback_reason is not None:
+                    await self._submit_claim_failure(
+                        item=item,
+                        attempt_id=attempt_id,
+                        policy_version=policy_version,
+                        effective_review_settings=effective_review_settings,
+                        reason_code=fallback_reason,
+                        error=error,
+                    )
             else:
                 # A claim is already durable. Returning to polling without a
                 # terminal result makes Platform infer worker-lease-orphaned

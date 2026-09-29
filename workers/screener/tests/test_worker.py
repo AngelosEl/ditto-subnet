@@ -12,11 +12,16 @@ from typing import Any
 from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
+import httpx
 import pytest
 from pydantic import ValidationError
 
 from ditto_screener.config import ScreenerConfig
-from ditto_screener.errors import PlatformError
+from ditto_screener.errors import (
+    PlatformAuthOnlyFailure,
+    PlatformError,
+    PlatformRejected,
+)
 from ditto_screener.gate import BuiltImageArtifact, LeaseDeadline
 from ditto_screener.heartbeat import (
     DockerHealth,
@@ -25,6 +30,7 @@ from ditto_screener.heartbeat import (
     ScreenerHeartbeatResponse,
 )
 from ditto_screener.l2_review import L2RunResult, L2Usage
+from ditto_screener.platform import PlatformClient
 from ditto_screener.policy import (
     CORE_ONLY_MANIFEST,
     PolicyEngine,
@@ -1537,6 +1543,120 @@ async def test_verdict_platform_error_swallowed(
     # Must not raise (a 409/late verdict is logged and skipped).
     await worker._screen_one(_item(uuid4()), policy_version=SCREENING_POLICY_VERSION)
     assert platform.verdicts == []
+
+
+@pytest.mark.parametrize("status_code", [400, 413, 422, None])
+@pytest.mark.parametrize("fallback_fails", [False, True])
+async def test_definitive_verdict_failure_submits_one_attempt_bound_fallback(
+    make_config: Callable[..., ScreenerConfig],
+    status_code: int | None,
+    fallback_fails: bool,
+) -> None:
+    platform = _FakePlatform([])
+    worker = _worker(
+        make_config(), platform, _FakeGate(_decision(ScreeningOutcome.PASS))
+    )
+    item = _item(uuid4())
+    error = (
+        PlatformRejected(status_code=status_code, body="invalid signed review audit")
+        if status_code is not None
+        else PlatformAuthOnlyFailure("credential refresh failed")
+    )
+    original_submit = platform.submit_result
+    calls: list[dict[str, Any]] = []
+
+    async def submit(agent_id: UUID, **kwargs: Any):
+        calls.append({"agent_id": agent_id, **kwargs})
+        if len(calls) == 1:
+            raise error
+        if fallback_fails:
+            raise PlatformRejected(status_code=409, body="attempt already completed")
+        return await original_submit(agent_id, **kwargs)
+
+    platform.submit_result = submit  # type: ignore[method-assign]
+    await worker._screen_one(item, policy_version=SCREENING_POLICY_VERSION)
+
+    assert len(calls) == 2
+    verdict = calls[1]
+    request = _signed_request(verdict)
+    assert verdict["agent_id"] == item.agent_id
+    assert request.attempt_id == item.attempt_id
+    assert request.outcome == ScreenResultOutcome.RETRYABLE_INFRA
+    assert request.passed is False
+    assert request.reason_code == (
+        "worker-verdict-rejected"
+        if status_code is not None
+        else "worker-verdict-auth-failed"
+    )
+    assert request.private_failure_detail is not None
+    if status_code is not None:
+        assert str(status_code) in request.private_failure_detail
+        assert "invalid signed review audit" in request.private_failure_detail
+    else:
+        assert "no verdict request was sent" in request.private_failure_detail
+    assert worker._active_attempt_id is None
+    assert worker._active_agent_id is None
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        PlatformError("verdict submit failed: response lost"),
+        PlatformError("verdict rejected (503): unavailable"),
+        PlatformRejected(status_code=401, body="unauthorized"),
+        PlatformRejected(status_code=409, body="agent no longer screenable"),
+    ],
+)
+async def test_ambiguous_or_unauthorized_verdict_failure_never_submits_fallback(
+    make_config: Callable[..., ScreenerConfig], error: PlatformError
+) -> None:
+    platform = _FakePlatform([])
+    platform.submit_result = AsyncMock(side_effect=error)
+    worker = _worker(
+        make_config(), platform, _FakeGate(_decision(ScreeningOutcome.PASS))
+    )
+    await worker._screen_one(_item(uuid4()), policy_version=SCREENING_POLICY_VERSION)
+    assert platform.submit_result.await_count == 1
+    assert platform.verdicts == []
+
+
+async def test_accepted_verdict_with_lost_response_then_conflict_has_no_fallback(
+    make_config: Callable[..., ScreenerConfig], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A conflicting retry must never replace the original signed result."""
+    cfg = make_config()
+    platform = _FakePlatform([])
+    worker = _worker(cfg, platform, _FakeGate(_decision(ScreeningOutcome.PASS)))
+    item = _item(uuid4())
+    requests: list[httpx.Request] = []
+    accepted: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if len(requests) == 1:
+            # Platform commits the pass, but the connection loses its response.
+            accepted.update(json.loads(request.content))
+            raise httpx.ReadError("accepted response lost", request=request)
+        # The agent changed state before the idempotent retry arrived. The
+        # same 409 would also refuse any replacement infrastructure verdict.
+        return httpx.Response(409, text="agent no longer screenable")
+
+    monkeypatch.setattr(
+        "ditto_screener.platform._TRANSIENT_PLATFORM_RETRY_DELAYS", (0.0,)
+    )
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        client = PlatformClient(cfg, http)
+        platform.submit_result = client.submit_result  # type: ignore[method-assign]
+        await worker._screen_one(item, policy_version=SCREENING_POLICY_VERSION)
+
+    assert len(requests) == 2
+    assert requests[0].content == requests[1].content
+    assert accepted["attempt_id"] == str(item.attempt_id)
+    assert accepted["outcome"] == ScreenResultOutcome.PASS.value
+    assert accepted["passed"] is True
+    assert worker._active_attempt_id is None
+    assert worker._active_agent_id is None
+    assert platform.heartbeats[-1].state == "polling"
 
 
 async def test_pre_verdict_platform_error_posts_retryable_failure(

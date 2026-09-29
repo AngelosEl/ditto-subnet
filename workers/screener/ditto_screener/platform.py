@@ -28,7 +28,12 @@ from ditto_screener.enrollment import (
     refresh_signing_message,
     store_node_credential,
 )
-from ditto_screener.errors import PlatformError
+from ditto_screener.errors import (
+    PlatformAuthOnlyFailure,
+    PlatformAuthUnavailable,
+    PlatformError,
+    PlatformRejected,
+)
 from ditto_screener.heartbeat import (
     ScreenerHeartbeatRequest,
     ScreenerHeartbeatResponse,
@@ -259,7 +264,7 @@ class PlatformClient:
                 self._headers["Authorization"] = f"Bearer {credential.api_token}"
                 return dict(self._headers)
             if self._keypair is None:
-                raise PlatformError(
+                raise PlatformAuthUnavailable(
                     "enrolled node cannot rotate without its signing key"
                 )
             refresh_id = credential.pending_refresh_id or uuid4()
@@ -717,20 +722,47 @@ class PlatformClient:
         )
         body = payload.model_dump(mode="json")
         last_error = "verdict submit did not run"
+        request_sent = False
+        response_lost = False
         for retry_index in range(len(_TRANSIENT_PLATFORM_RETRY_DELAYS) + 1):
             try:
-                resp = await self._client.post(
-                    url, json=body, headers=await self._auth_headers()
-                )
-            except httpx.HTTPError as error:
-                last_error = f"verdict submit failed: {error}"
-                transient = True
+                headers = await self._auth_headers()
+            except PlatformAuthUnavailable as error:
+                last_error = f"verdict auth refresh failed: {error}"
+                if not request_sent:
+                    raise PlatformAuthOnlyFailure(last_error) from error
+                raise PlatformError(last_error) from error
+            except PlatformError as error:
+                last_error = f"verdict auth refresh failed: {error}"
             else:
-                if resp.status_code == 200:
-                    return ScreenResultResponse.model_validate(resp.json())
-                last_error = f"verdict rejected ({resp.status_code}): {resp.text[:200]}"
-                transient = _is_transient_platform_status(resp.status_code)
-            if not transient or retry_index >= len(_TRANSIENT_PLATFORM_RETRY_DELAYS):
+                try:
+                    # Once dispatched, a transport failure may hide a committed
+                    # verdict. Later auth failures must not erase that ambiguity.
+                    request_sent = True
+                    resp = await self._client.post(url, json=body, headers=headers)
+                except httpx.HTTPError as error:
+                    response_lost = True
+                    last_error = f"verdict submit failed: {error}"
+                else:
+                    if resp.status_code == 200:
+                        return ScreenResultResponse.model_validate(resp.json())
+                    if not _is_transient_platform_status(resp.status_code):
+                        # A previous dispatch may already have committed its
+                        # verdict. A later rejection cannot prove otherwise.
+                        if response_lost:
+                            raise PlatformError(
+                                f"verdict retry rejected ({resp.status_code}) "
+                                "after an uncertain dispatch"
+                            )
+                        raise PlatformRejected(
+                            status_code=resp.status_code, body=resp.text
+                        )
+                    last_error = (
+                        f"verdict rejected ({resp.status_code}): {resp.text[:200]}"
+                    )
+            if retry_index >= len(_TRANSIENT_PLATFORM_RETRY_DELAYS):
+                if not request_sent:
+                    raise PlatformAuthOnlyFailure(last_error)
                 raise PlatformError(last_error)
             delay = _TRANSIENT_PLATFORM_RETRY_DELAYS[retry_index]
             logger.warning(
