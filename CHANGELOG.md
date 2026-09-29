@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.330.2 (2026-09-29)
+
+### Bug Fixes
+
+- **screener**: Integrate zero-admission and lease-safe fleet recovery
+  ([#2536](https://github.com/ditto-assistant/ditto-subnet/pull/2536),
+  [`861814b`](https://github.com/ditto-assistant/ditto-subnet/commit/861814b58a38c0582e9fc73848566d1b6fe8c325))
+
+
 ## v0.330.1 (2026-09-29)
 
 ### Bug Fixes
