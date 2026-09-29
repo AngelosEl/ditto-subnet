@@ -84,7 +84,7 @@ _MANUAL_RETRY_CODES = (
     "worker-lease-orphaned",
     "worker-platform-request-failed",
     "l2-cache-lock-timeout",
-    "source-review-retryable-infra",
+    "source-review-model-timeout",
 )
 
 

@@ -81,7 +81,7 @@ if TYPE_CHECKING:
 # fleet, transport, or lock state. A reviewer or model failure, a budget or lease
 # outcome, or a catch-all code a submission can reach (``worker-lease-orphaned``,
 # ``worker-platform-request-failed``, ``l2-cache-lock-timeout``,
-# ``source-review-retryable-infra``, see #2449) stays on the operator retry, or a
+# ``source-review-model-timeout``, see #2449) stays on the operator retry, or a
 # hostile archive could loop the fleet. Deliberately separate from
 # PROVIDER_BACKOFF_REASON_CODES, whose members are held on reclaim AND counted
 # toward the inconclusive park cap. Adding a code here means updating the partial

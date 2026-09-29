@@ -7510,6 +7510,14 @@ async def agent_summary(
     )
 
 
+# An L1 model turn that timed out with lease time left. Operator-retried, so
+# it reports parked rather than stuck. ``source-review-retryable-infra`` is the
+# code's historical spelling, kept so older rows still render (#2458).
+_SOURCE_REVIEW_MODEL_TIMEOUT_REASON_CODES = (
+    "source-review-model-timeout",
+    "source-review-retryable-infra",
+)
+
 # The lane each Ditto-side admission failure stopped in. Any other reason code
 # names no lane the public pipeline can vouch for.
 _ADMISSION_LANE_BY_REASON_CODE: dict[str, PublicAdmissionLane] = {
@@ -7521,7 +7529,7 @@ _ADMISSION_LANE_BY_REASON_CODE: dict[str, PublicAdmissionLane] = {
     "targon-runtime-unavailable": "runtime_smoke",
     "cloudrun-runtime-unavailable": "runtime_smoke",
     "targon-source-review-unavailable": "source_review",
-    "source-review-retryable-infra": "source_review",
+    **dict.fromkeys(_SOURCE_REVIEW_MODEL_TIMEOUT_REASON_CODES, "source_review"),
 }
 
 
@@ -7626,7 +7634,9 @@ async def agent_pipeline(
             )
             if overridden is not None:
                 retry_state = "retry_queued"
-            elif latest_attempt.reason_code == "source-review-retryable-infra":
+            elif (
+                latest_attempt.reason_code in _SOURCE_REVIEW_MODEL_TIMEOUT_REASON_CODES
+            ):
                 retry_state = "parked"
             elif scheduled is not None and scheduled.state != "capped":
                 # Automatic, bounded retry: the miner sees the earliest start

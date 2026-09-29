@@ -9222,7 +9222,7 @@ class TestQuarantineAdmin:
                     deadline=now + timedelta(minutes=50),
                     finished_at=now,
                     public_reason="Screening was interrupted; manual retry required",
-                    reason_code="source-review-retryable-infra",
+                    reason_code="source-review-model-timeout",
                 )
             )
             canary_revision_id = canary_revision.revision
