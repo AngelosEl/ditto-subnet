@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.330.6 (2026-09-29)
+
+### Bug Fixes
+
+- **platform**: Repin canonical starter fixture to v0.330.5
+  ([#2558](https://github.com/ditto-assistant/ditto-subnet/pull/2558),
+  [`a3ae815`](https://github.com/ditto-assistant/ditto-subnet/commit/a3ae8156294c89ca1ecad4e76b7725605a2c3a13))
+
+
 ## v0.330.5 (2026-09-29)
 
 ### Bug Fixes
