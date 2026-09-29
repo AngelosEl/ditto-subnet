@@ -10,6 +10,7 @@ import io
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -85,12 +86,31 @@ from ditto_screening_protocol import (
     SourceReviewInvariant,
     SourceReviewInvariantDisposition,
 )
-from scripts.generate_starter_provenance import _tracked_files
+from scripts.generate_starter_provenance import (
+    ORIGIN as MONOREPO_STARTER_ORIGIN,
+)
+from scripts.generate_starter_provenance import newest_manifest, starter_files
 
 SYSTEM_PROMPT = _l2_review_system_prompt(SCREENING_POLICY_VERSION)
 
 ROOT = Path(__file__).resolve().parents[1]
+STARTER_KIT = ROOT.parents[1] / "miners" / "dittobench-starter-kit"
 ATTEMPT = UUID("96af45fd-65da-4f59-87f8-8ddf5d57f88c")
+
+
+def _stage_starter_kit(source: Path, destination: Path) -> dict[str, str]:
+    """Copy only the kit's tracked, submittable files, as a submission carries.
+
+    Local build output (``target/``) or secrets beside a checkout would
+    otherwise show up as miner-added files.
+    """
+    files = starter_files(source)
+    for relative in files:
+        target = destination / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source / relative, target)
+    return files
+
 
 _PASS_CLAUSES = {
     "i1_model_invocation": "genuine_model_result",
@@ -179,24 +199,52 @@ def test_l2_extraction_budget_allows_archives_over_twenty_mib(tmp_path: Path) ->
 
 
 def test_supported_starter_manifests_are_versioned_and_distinct() -> None:
-    manifests = [json.loads(path.read_text()) for path in L2_STARTER_MANIFESTS]
-    assert [manifest["revision"] for manifest in manifests] == [
-        "959cd69a1a8d3b0defbfb8296518adb7d4f17c14",
-        "60aab4e5e2839ddb0fe8c80492bd7b76ba2668fd",
-        "106076a40e4214cda821dfd0bee5c9c6785d425c",
-        "23d9e87039a66e08548ec95826e7201b90988c5a",
+    manifests = {
+        path.name: json.loads(path.read_text()) for path in L2_STARTER_MANIFESTS
+    }
+    # The standalone-repository baselines are frozen: older honest derivatives
+    # must keep matching exactly, so these pins never move.
+    legacy = {
+        "starter-kit-provenance-v1.json": (
+            "959cd69a1a8d3b0defbfb8296518adb7d4f17c14",
+            38,
+            98,
+        ),
+        "starter-kit-provenance-v3.json": (
+            "60aab4e5e2839ddb0fe8c80492bd7b76ba2668fd",
+            38,
+            103,
+        ),
+        "starter-kit-provenance-v4.json": (
+            "106076a40e4214cda821dfd0bee5c9c6785d425c",
+            42,
+            103,
+        ),
+        "starter-kit-provenance-v5.json": (
+            "23d9e87039a66e08548ec95826e7201b90988c5a",
+            42,
+            111,
+        ),
+    }
+    for name, (revision, file_count, function_count) in legacy.items():
+        manifest = manifests.pop(name)
+        assert manifest["version"] == 2
+        assert manifest["origin"] == "ditto-assistant/dittobench-starter-kit"
+        assert manifest["revision"] == revision
+        assert len(manifest["files"]) == file_count
+        assert len(manifest["rust_functions"]) == function_count
+    # Every later manifest is generated from the monorepo kit, which carries
+    # no per-function hashes because no runtime consumer reads them.
+    assert "starter-kit-provenance-v6.json" in manifests
+    for manifest in manifests.values():
+        assert manifest["version"] == 1
+        assert "rust_functions" not in manifest
+        assert manifest["origin"] == MONOREPO_STARTER_ORIGIN
+        assert re.fullmatch(r"[0-9a-f]{40}", manifest["revision"])
+    revisions = [
+        json.loads(path.read_text())["revision"] for path in L2_STARTER_MANIFESTS
     ]
-    assert all(
-        manifest["origin"] == "ditto-assistant/dittobench-starter-kit"
-        for manifest in manifests
-    )
-    assert [len(manifest["files"]) for manifest in manifests] == [38, 38, 42, 42]
-    assert [len(manifest["rust_functions"]) for manifest in manifests] == [
-        98,
-        103,
-        103,
-        111,
-    ]
+    assert len(revisions) == len(set(revisions))
 
 
 def test_starter_provenance_generator_ignores_untracked_build_outputs(
@@ -210,9 +258,7 @@ def test_starter_provenance_generator_ignores_untracked_build_outputs(
     subprocess.run(["git", "init", "-q"], cwd=root, check=True)
     subprocess.run(["git", "add", "src/lib.rs"], cwd=root, check=True)
 
-    assert [path.relative_to(root).as_posix() for path in _tracked_files(root)] == [
-        "src/lib.rs"
-    ]
+    assert list(starter_files(root)) == ["src/lib.rs"]
 
 
 def test_causal_basis_prefers_reconstructed_generator_over_downstream_effects() -> None:
@@ -2655,6 +2701,33 @@ async def test_inprocess_starter_diff_ignores_non_provenance_json(
     assert isinstance(payload["removed"], list)
 
 
+async def test_inprocess_starter_diff_matches_current_kit_to_newest_manifest(
+    tmp_path: Path,
+) -> None:
+    if not STARTER_KIT.is_dir():
+        pytest.skip("the monorepo starter kit is not part of this checkout")
+    workspace = tmp_path / "starter"
+    files = _stage_starter_kit(STARTER_KIT, workspace)
+    newest = json.loads(newest_manifest(ROOT / "ditto_screener" / "data").read_text())
+
+    payload = json.loads(
+        await InProcessAnalyzerHarness().run(workspace, "starter_diff", {})
+    )
+
+    assert "error" not in payload, payload
+    assert payload["revision"] == newest["revision"]
+    assert payload["origin"] == newest["origin"]
+    assert payload["unchanged"] == sorted(files) == sorted(newest["files"])
+    assert payload["modified"] == []
+    assert payload["added"] == []
+    assert payload["removed"] == []
+    assert payload["truncated"] is False
+    assert payload["candidates"][0] == {
+        "revision": newest["revision"],
+        "changed_file_count": 0,
+    }
+
+
 async def test_inprocess_harness_rejects_unknown_command(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="non-allowlisted"):
         await InProcessAnalyzerHarness().run(tmp_path, "rm_rf", {})
@@ -3790,7 +3863,10 @@ async def test_sol_request_is_provider_locked_cached_and_concurrency_safe(
         record["causal_verification_reason"] == "causal-evidence-not-required"
         for record in records
     )
-    assert all(len(record["starter_revisions"]) == 4 for record in records)
+    assert all(
+        len(record["starter_revisions"]) == len(L2_STARTER_MANIFESTS)
+        for record in records
+    )
     assert all(record["budgets"]["max_cost_usd"] == 1.5 for record in records)
     assert all(record["budgets"]["max_analyzer_calls"] == 24 for record in records)
     assert all(
@@ -7017,13 +7093,18 @@ async def test_real_analyzer_container_isolated_and_canonical_starter_clean(
     output, _ = await build.communicate()
     assert build.returncode == 0, output.decode(errors="replace")[-4_000:]
     harness = IsolatedCodingHarness(docker_bin="docker", image=image)
-    diff = json.loads(await harness.run(starter, "starter_diff", {}))
-    assert diff["revision"] == "106076a40e4214cda821dfd0bee5c9c6785d425c"
+    # Diff the submittable kit, not the checkout: an untracked local target/
+    # is build output, never a miner-added file.
+    staged = tmp_path / "canonical-starter"
+    _stage_starter_kit(starter, staged)
+    newest = json.loads(newest_manifest(ROOT / "ditto_screener" / "data").read_text())
+    diff = json.loads(await harness.run(staged, "starter_diff", {}))
+    assert diff["revision"] == newest["revision"]
     assert not diff["modified"]
     assert not diff["added"]
     assert not diff["removed"]
-    assert len(diff["unchanged"]) == 42
-    surfaces = json.loads(await harness.run(starter, "integrity_surfaces", {}))
+    assert diff["unchanged"] == sorted(newest["files"])
+    surfaces = json.loads(await harness.run(staged, "integrity_surfaces", {}))
     assert not surfaces["truncated"]
     assert surfaces["surfaces"]["service_entry"]["count"] > 0
     assert surfaces["surfaces"]["model_authority"]["count"] > 0

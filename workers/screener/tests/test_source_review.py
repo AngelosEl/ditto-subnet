@@ -36,8 +36,18 @@ from ditto_screening_protocol import (
     SourceReviewInvariantDisposition,
 )
 from ditto_screening_protocol.review_ledger import substantiated_concern_count
+from scripts.generate_starter_provenance import newest_manifest, starter_files
 
 _SHA = "ab" * 32
+_STARTER_KIT = Path(__file__).resolve().parents[3] / "miners" / "dittobench-starter-kit"
+_STARTER_MANIFESTS = tuple(
+    str(path)
+    for path in sorted(
+        (Path(source_review_module.__file__).parent / "data").glob(
+            "starter-kit-provenance-*.json"
+        )
+    )
+)
 
 _PASS_CLAUSES = {
     "i1_model_invocation": "genuine_model_result",
@@ -4053,6 +4063,80 @@ def test_closest_official_provenance_reports_ambiguous_exact_tie(
     assert provenance["candidate_revisions"] == ["newer", "older"]
     assert provenance["selection"] == "ambiguous-closest-supported-revisions"
     assert provenance["matched_exact_files"] == ["README.md"]
+
+
+def _current_starter_kit_files() -> dict[str, bytes]:
+    if not _STARTER_KIT.is_dir():
+        pytest.skip("the monorepo starter kit is not part of this checkout")
+    return {
+        relative: (_STARTER_KIT / relative).read_bytes()
+        for relative in starter_files(_STARTER_KIT)
+    }
+
+
+def test_closest_trusted_provenance_matches_current_starter_kit(
+    tmp_path: Path,
+) -> None:
+    files = _current_starter_kit_files()
+    newest = json.loads(newest_manifest(Path(_STARTER_MANIFESTS[0]).parent).read_text())
+
+    provenance = json.loads(
+        TarSourceRepository(
+            str(_archive_files(tmp_path, files))
+        ).closest_trusted_provenance(_STARTER_MANIFESTS)
+    )
+
+    assert provenance["revision"] == newest["revision"]
+    assert provenance["selection"] == "unique-closest-supported-revision"
+    assert provenance["matched_exact_files"] == sorted(files)
+    assert provenance["tracked_but_modified_files"] == []
+
+
+def test_member_digest_is_read_once_per_archive_member(tmp_path: Path) -> None:
+    archive = _archive_files(tmp_path, {"README.md": b"shared"})
+    repository = TarSourceRepository(str(archive))
+    first = repository.member_sha256("README.md")
+    archive.unlink()
+
+    # Later manifests reuse the digest instead of rescanning the archive.
+    assert repository.member_sha256("README.md") == first
+    assert first == hashlib.sha256(b"shared").hexdigest()
+
+
+@pytest.mark.parametrize("mode", ["off", "shadow", "enforce"])
+def test_malicious_preflight_trusts_every_current_starter_kit_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str
+) -> None:
+    files = _current_starter_kit_files()
+    scanned: list[list[str]] = []
+
+    def recording_detector(
+        readable: list[tuple[str, str]], **kwargs: object
+    ) -> list[dict[str, object]]:
+        scanned.append([path for path, _text in readable])
+        return find_decisive_malicious_source(readable, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(
+        source_review_module, "find_decisive_malicious_source", recording_detector
+    )
+    kit = TarSourceRepository(
+        str(_archive_files(tmp_path, files)), static_preflight_v2_mode=mode
+    )
+    assert kit.malicious_preflight(artifact_sha256="a" * 64, mode=mode) is None
+    # Every runtime file matched the newest manifest exactly, so nothing was
+    # scanned as miner-authored.
+    assert scanned == [[]]
+
+    # One changed byte removes the exemption; trust is never fuzzy.
+    edited = dict(files)
+    edited["src/lib.rs"] = files["src/lib.rs"] + b"\n"
+    modified_dir = tmp_path / "modified"
+    modified_dir.mkdir()
+    modified = TarSourceRepository(
+        str(_archive_files(modified_dir, edited)), static_preflight_v2_mode=mode
+    )
+    modified.malicious_preflight(artifact_sha256="b" * 64, mode=mode)
+    assert scanned[-1] == ["src/lib.rs"]
 
 
 async def test_sanitized_shortcut_fixture_produces_bounded_risk_digest(
