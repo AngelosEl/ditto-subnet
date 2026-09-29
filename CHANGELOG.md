@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.326.0 (2026-09-29)
+
+### Features
+
+- **bench**: Add opt-in tool effect receipts
+  ([#2530](https://github.com/ditto-assistant/ditto-subnet/pull/2530),
+  [`9071006`](https://github.com/ditto-assistant/ditto-subnet/commit/9071006739c9ccba16df352f734255b1bea4c248))
+
+
 ## v0.325.3 (2026-09-28)
 
 ### Bug Fixes
