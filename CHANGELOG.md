@@ -2,6 +2,19 @@
 
 <!-- version list -->
 
+## v0.330.3 (2026-09-29)
+
+### Bug Fixes
+
+- **dittobench**: Account for receipt replays separately from effects
+  ([#2538](https://github.com/ditto-assistant/ditto-subnet/pull/2538),
+  [`7275de0`](https://github.com/ditto-assistant/ditto-subnet/commit/7275de095b1743716fa5f6b2e84b6ea12eb17b3b))
+
+- **starter-kit**: Block legacy repeat after unknown tool delivery
+  ([#2539](https://github.com/ditto-assistant/ditto-subnet/pull/2539),
+  [`55bcca4`](https://github.com/ditto-assistant/ditto-subnet/commit/55bcca4eecbeb7d1d7214ede50d23286cdea8aac))
+
+
 ## v0.330.2 (2026-09-29)
 
 ### Bug Fixes
