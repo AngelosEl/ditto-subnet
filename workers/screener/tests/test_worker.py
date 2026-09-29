@@ -1528,12 +1528,16 @@ async def test_accepted_progress_heartbeat_renews_active_local_deadline(
     worker._active_progress_stage = "building"
     worker._job_started_at = int(datetime.now(UTC).timestamp())
     worker._active_lease_deadline = LeaseDeadline(asyncio.get_running_loop().time() + 1)
+    # Budgets carved from the lease (e.g. L1/L2 before the court reserve)
+    # must observe the same renewal.
+    derived = worker._active_lease_deadline.offset(30)
 
     await worker._report_heartbeat("screening", force=True)
 
     assert worker._active_lease_deadline.expires_at > (
         asyncio.get_running_loop().time() + 9 * 60
     )
+    assert derived.expires_at == worker._active_lease_deadline.expires_at - 30
 
 
 async def test_same_stage_heartbeat_follows_platform_lease_renewal(

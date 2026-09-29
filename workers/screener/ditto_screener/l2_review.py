@@ -2672,6 +2672,22 @@ def _signed_runtime_lease_matches(
     )
 
 
+def _deadline_before(deadline: float, seconds: float) -> float:
+    """``deadline - seconds``, still following a renewable lease."""
+    offset = getattr(deadline, "offset", None)
+    return deadline - seconds if offset is None else offset(seconds)
+
+
+def _deadline_capped(deadline: float, not_after: float) -> float:
+    """The earlier deadline, still following a renewable lease up to the cap.
+
+    ``min()`` would hand back the lease object itself, which a later renewal
+    could push past a layer's own timeout.
+    """
+    cap = getattr(deadline, "cap", None)
+    return min(deadline, not_after) if cap is None else cap(not_after)
+
+
 class TerraSolSourceReviewAgent:
     """Terra analyst plus independent SOL critic/adjudicator trajectories."""
 
@@ -2797,7 +2813,9 @@ class TerraSolSourceReviewAgent:
         started = time.monotonic()
         local_deadline = asyncio.get_running_loop().time() + self._timeout_seconds
         effective_deadline = (
-            local_deadline if deadline is None else min(local_deadline, deadline)
+            local_deadline
+            if deadline is None
+            else _deadline_capped(deadline, local_deadline)
         )
         runtime_evidence: dict[str, object] | None = None
         if not _signed_runtime_lease_matches(
@@ -5528,36 +5546,38 @@ class LayeredSourceReviewAgent:
             review_audit=audit.model_dump(mode="json"),
         )
 
-    def _exploration_deadline(self, deadline: float | None) -> float | None:
-        """Reserve court time without zeroing exploration on a short lease."""
-        if deadline is None or self._adjudicator is None:
-            return deadline
-        remaining = max(0.0, deadline - asyncio.get_running_loop().time())
-        effective_reserve = min(
-            self._adjudicator_reserve_seconds,
-            remaining / 2.0,
-        )
-        return deadline - effective_reserve
+    def _exploration_deadline(
+        self, deadline: float | None
+    ) -> tuple[float | None, float]:
+        """Reserve court time without zeroing exploration on a short lease.
 
-    def _court_deadline(
-        self,
-        deadline: float | None,
-        review_deadline: float | None,
-    ) -> float | None:
-        """Give L4 its reserved window, never the remainder of the lease.
-
-        ``review_deadline`` partitions a short lease between the exploratory
-        layers and the court.  Handing the court the parent deadline again
-        erased that partition whenever L1/L2 finished quickly: a sequence of
-        slow but individually-bounded model turns could consume the build and
-        verdict-reporting time.  The court may still use its full reserved
-        duration from the moment it starts, but its timeout cannot grow into
-        the rest of the lease.
+        Returns the exploratory layers' deadline and the court's reserve in
+        seconds. The exploration deadline stays a fixed distance before a
+        renewable lease, so heartbeat renewals reach L1/L2 rather than
+        inflating the court's window.
         """
-        if deadline is None or review_deadline is None:
+        if deadline is None or self._adjudicator is None:
+            return deadline, 0.0
+        remaining = max(0.0, deadline - asyncio.get_running_loop().time())
+        reserve = min(self._adjudicator_reserve_seconds, remaining / 2.0)
+        return _deadline_before(deadline, reserve), reserve
+
+    @staticmethod
+    def _court_deadline(deadline: float | None, reserve: float) -> float | None:
+        """Give L4 its reserved window from the moment it starts.
+
+        ``reserve`` partitions a short lease between the exploratory layers
+        and the court.  Handing the court the parent deadline again erased
+        that partition whenever L1/L2 finished quickly: a sequence of slow but
+        individually-bounded model turns could consume the build and
+        verdict-reporting time.  Measured when the court starts, it gets
+        ``min(reserve, time left on the lease)``: a slow L2 cannot eat into
+        the court's window, and a lease renewal cannot grow it past the
+        reserve.
+        """
+        if deadline is None or reserve <= 0:
             return deadline
-        reserve = max(0.0, deadline - review_deadline)
-        return min(deadline, asyncio.get_running_loop().time() + reserve)
+        return _deadline_capped(deadline, asyncio.get_running_loop().time() + reserve)
 
     def pop_shadow_result(self, attempt_id: UUID) -> L2RunResult | None:
         """Consume shadow telemetry or an isolated enforce-preview result."""
@@ -5696,10 +5716,11 @@ class LayeredSourceReviewAgent:
 
         # L4 is the terminal court, so the exploratory stages may not consume
         # its entire wall-clock allowance.  They share a deadline shortened by
-        # the configured court timeout; L4 receives the original deadline and
-        # can therefore decide from whatever durable notes/finding exist when
-        # L1/L2 run out of time.
-        review_deadline = self._exploration_deadline(deadline)
+        # the configured court timeout; L4 receives that reserve from the
+        # moment it starts, within the original deadline, and can therefore
+        # decide from whatever durable notes/finding exist when L1/L2 run out
+        # of time.
+        review_deadline, court_reserve = self._exploration_deadline(deadline)
         # A longer report-only lease reserves a separate L2 window. Bound L1
         # to its own configured aggregate timeout so a slow but legitimate L1
         # cannot consume the entire lease before L2 starts. Shorter ordinary
@@ -5709,7 +5730,9 @@ class LayeredSourceReviewAgent:
         if isinstance(l1_timeout, (int, float)) and l1_timeout > 0:
             bounded = asyncio.get_running_loop().time() + l1_timeout
             l1_deadline = (
-                bounded if review_deadline is None else min(review_deadline, bounded)
+                bounded
+                if review_deadline is None
+                else _deadline_capped(review_deadline, bounded)
             )
         l1 = await self._l1.review(
             archive_path,
@@ -5726,6 +5749,7 @@ class LayeredSourceReviewAgent:
             progress=progress,
             deadline=deadline,
             review_deadline=review_deadline,
+            court_reserve_seconds=court_reserve,
             policy_version=policy_version,
             scored_runtime_evidence=scored_runtime_evidence,
         )
@@ -5740,6 +5764,7 @@ class LayeredSourceReviewAgent:
         progress: Callable[[int, int], None] | None = None,
         deadline: float | None = None,
         review_deadline: float | None = None,
+        court_reserve_seconds: float | None = None,
         policy_version: int = SCREENING_POLICY_VERSION,
         scored_runtime_evidence: ScoredRuntimeEvidenceLease | None = None,
     ) -> SourceReviewObservation:
@@ -5769,9 +5794,13 @@ class LayeredSourceReviewAgent:
         l1 = l1_observation
         if self._capture_enforce_result:
             self._preview_l1_results[attempt_id] = l1
-        if review_deadline is None and deadline is not None and self._adjudicator:
-            review_deadline = self._exploration_deadline(deadline)
-        court_deadline = self._court_deadline(deadline, review_deadline)
+        if court_reserve_seconds is None:
+            # Static preflight enters here without ``review()``'s partition.
+            derived_deadline, court_reserve_seconds = self._exploration_deadline(
+                deadline
+            )
+            if review_deadline is None and self._adjudicator:
+                review_deadline = derived_deadline
         always_escalate = (
             (policy_version == 13 and requires_lease)
             or self._always_escalate
@@ -5802,7 +5831,7 @@ class LayeredSourceReviewAgent:
             adjudicated = await self._adjudicate(
                 observation,
                 archive_path=archive_path,
-                deadline=court_deadline,
+                deadline=self._court_deadline(deadline, court_reserve_seconds),
                 policy_version=policy_version,
             )
             report(10)

@@ -23,6 +23,7 @@ import httpx
 import pytest
 
 import ditto_screener.l2_review as l2_review
+from ditto_screener.gate import LeaseDeadline
 from ditto_screener.heartbeat import source_review_progress_stage
 from ditto_screener.l2_review import (
     _ORDINARY_OPTIONAL_FIELD_SAFETY_TASK,
@@ -7027,11 +7028,13 @@ class _FakeAdjudicator:
         self.seen_notes: tuple[Any, ...] = ()
         self.seen_finding: Any = None
         self.deadline: float | None = None
+        self.started_at: float | None = None
         self.policy_version: int | None = None
         self._decision = decision
 
     async def adjudicate(self, _archive: str, **kwargs: Any) -> Any:
         self.calls += 1
+        self.started_at = asyncio.get_running_loop().time()
         self.seen_notes = tuple(kwargs.get("notes") or ())
         self.seen_finding = kwargs.get("finding")
         self.deadline = kwargs.get("deadline")
@@ -7261,6 +7264,186 @@ async def test_l2_wall_clock_timeout_still_hands_off_to_l4(tmp_path: Path) -> No
     assert court.calls == 1
     assert result.adjudication is not None
     assert result.adjudication["decision"] == "clear"
+
+
+class _SlowFakeL2(_FakeL2):
+    def __init__(
+        self,
+        result: L2RunResult,
+        *,
+        delay: float,
+        before_return: Any = None,
+    ) -> None:
+        super().__init__(result)
+        self.delay = delay
+        self.before_return = before_return
+
+    async def review(self, *args: Any, **kwargs: Any) -> L2RunResult:
+        await asyncio.sleep(self.delay)
+        if self.before_return is not None:
+            self.before_return()
+        return await super().review(*args, **kwargs)
+
+
+class _RenewingFakeL1(_FakeL1):
+    def __init__(self, result: SourceReviewObservation, renew: Any) -> None:
+        super().__init__(result)
+        self.renew = renew
+        self.remaining_after_renewal: float | None = None
+
+    async def review(self, *args: Any, **kwargs: Any) -> SourceReviewObservation:
+        observation = await super().review(*args, **kwargs)
+        self.renew()
+        assert self.deadline is not None
+        self.remaining_after_renewal = self.deadline - asyncio.get_running_loop().time()
+        return observation
+
+
+def _court_layered(
+    court: _FakeAdjudicator,
+    reserve: float,
+    *,
+    l1: _FakeL1 | None = None,
+    l2: _FakeL2 | None = None,
+) -> LayeredSourceReviewAgent:
+    return LayeredSourceReviewAgent(  # type: ignore[arg-type]
+        l1=l1 or _FakeL1(_l1("medium")),
+        l2=l2 or _FakeL2(_model_result(_safe())),
+        mode="enforce",
+        adjudicator=court,  # type: ignore[arg-type]
+        adjudicator_reserve_seconds=reserve,
+    )
+
+
+async def test_exploration_deadline_follows_lease_renewal() -> None:
+    layered = _court_layered(_FakeAdjudicator(), 600)
+    loop = asyncio.get_running_loop()
+    deadline = LeaseDeadline(loop.time() + 540)
+
+    review_deadline, reserve = layered._exploration_deadline(deadline)
+
+    assert reserve == pytest.approx(270, abs=0.1)
+    assert review_deadline is not None
+    assert review_deadline - loop.time() == pytest.approx(270, abs=0.1)
+    deadline.renew(loop.time() + 2_000)
+    assert review_deadline - loop.time() == pytest.approx(1_730, abs=0.1)
+
+
+async def test_l1_deadline_renews_mid_review() -> None:
+    loop = asyncio.get_running_loop()
+    deadline = LeaseDeadline(loop.time() + 540)
+    l1 = _RenewingFakeL1(_l1("medium"), lambda: deadline.renew(loop.time() + 2_000))
+    l2 = _FakeL2(_model_result(_safe()))
+    layered = _court_layered(_FakeAdjudicator(), 600, l1=l1, l2=l2)
+
+    await layered.review(
+        "unused", artifact_sha256="c" * 64, attempt_id=ATTEMPT, deadline=deadline
+    )
+
+    assert l1.remaining_after_renewal == pytest.approx(1_730, abs=0.1)
+    assert l2.deadline is not None
+    assert l2.deadline - loop.time() == pytest.approx(1_730, abs=0.1)
+
+
+async def test_l1_renewal_stays_capped_by_its_own_timeout() -> None:
+    loop = asyncio.get_running_loop()
+    deadline = LeaseDeadline(loop.time() + 540)
+    l1 = _RenewingFakeL1(_l1("medium"), lambda: deadline.renew(loop.time() + 2_000))
+    l1._timeout_seconds = 600  # type: ignore[attr-defined]
+    layered = _court_layered(_FakeAdjudicator(), 600, l1=l1)
+
+    await layered.review(
+        "unused", artifact_sha256="c" * 64, attempt_id=ATTEMPT, deadline=deadline
+    )
+
+    assert l1.remaining_after_renewal == pytest.approx(600, abs=0.1)
+
+
+async def test_court_window_stays_at_reserve_after_mid_l1_renew() -> None:
+    loop = asyncio.get_running_loop()
+    deadline = LeaseDeadline(loop.time() + 540)
+    court = _FakeAdjudicator()
+    l1 = _RenewingFakeL1(_l1("medium"), lambda: deadline.renew(loop.time() + 2_000))
+    layered = _court_layered(court, 600, l1=l1)
+
+    await layered.review(
+        "unused", artifact_sha256="c" * 64, attempt_id=ATTEMPT, deadline=deadline
+    )
+
+    assert court.calls == 1
+    assert court.deadline is not None and court.started_at is not None
+    assert court.deadline - court.started_at == pytest.approx(270, abs=0.1)
+
+
+async def test_court_gets_full_reserve_after_slow_l2() -> None:
+    court = _FakeAdjudicator()
+    l2 = _SlowFakeL2(_model_result(_safe()), delay=0.6)
+    layered = _court_layered(court, 0.4, l2=l2)
+
+    await layered.review(
+        "unused",
+        artifact_sha256="c" * 64,
+        attempt_id=ATTEMPT,
+        deadline=asyncio.get_running_loop().time() + 2,
+    )
+
+    assert court.calls == 1
+    assert court.deadline is not None and court.started_at is not None
+    assert court.deadline - court.started_at == pytest.approx(0.4, abs=0.05)
+
+
+async def test_court_deadline_never_exceeds_parent_lease() -> None:
+    court = _FakeAdjudicator()
+    l2 = _SlowFakeL2(_model_result(_safe()), delay=0.7)
+    layered = _court_layered(court, 0.8, l2=l2)
+    deadline = asyncio.get_running_loop().time() + 1
+
+    await layered.review(
+        "unused", artifact_sha256="c" * 64, attempt_id=ATTEMPT, deadline=deadline
+    )
+
+    assert court.calls == 1
+    assert court.deadline is not None and court.started_at is not None
+    assert court.deadline <= deadline
+    assert court.deadline - court.started_at > 0
+
+
+async def test_court_reserve_ignores_lease_renewal() -> None:
+    loop = asyncio.get_running_loop()
+    deadline = LeaseDeadline(loop.time() + 2)
+    court = _FakeAdjudicator()
+    l2 = _SlowFakeL2(
+        _model_result(_safe()),
+        delay=0.6,
+        before_return=lambda: deadline.renew(loop.time() + 60),
+    )
+    layered = _court_layered(court, 0.4, l2=l2)
+
+    await layered.review(
+        "unused", artifact_sha256="c" * 64, attempt_id=ATTEMPT, deadline=deadline
+    )
+
+    assert court.calls == 1
+    assert court.deadline is not None and court.started_at is not None
+    assert court.deadline - court.started_at == pytest.approx(0.4, abs=0.05)
+
+
+async def test_preflight_resolve_lead_gets_full_court_reserve() -> None:
+    court = _FakeAdjudicator()
+    l2 = _SlowFakeL2(_model_result(_safe()), delay=0.6)
+    layered = _court_layered(court, 0.4, l2=l2)
+
+    await layered.resolve_lead(
+        "unused",
+        artifact_sha256="c" * 64,
+        attempt_id=ATTEMPT,
+        l1_observation=_l1("medium"),
+        deadline=asyncio.get_running_loop().time() + 2,
+    )
+
+    assert court.calls == 1
+    assert court.deadline is not None and court.started_at is not None
+    assert court.deadline - court.started_at == pytest.approx(0.4, abs=0.05)
 
 
 @pytest.mark.parametrize("policy_version", (10, 11))

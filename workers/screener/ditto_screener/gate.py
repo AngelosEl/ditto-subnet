@@ -51,6 +51,7 @@ import hashlib
 import io
 import json
 import logging
+import math
 import os
 import re
 import secrets
@@ -292,42 +293,102 @@ class _StageResult:
 
 
 class LeaseDeadline(float):
-    """Mutable monotonic deadline shared with the heartbeat renewal task."""
+    """Mutable monotonic deadline shared with the heartbeat renewal task.
 
-    expires_at: float
+    Arithmetic and ordering read the current expiry, never the ``float``
+    payload captured at construction. ``offset`` and ``cap`` derive views that
+    keep following this lease, so a budget carved from it (the exploration
+    window before the court reserve, a layer's own timeout, the held-image
+    margin) still moves when Platform renews the lease.
+    """
+
+    _expires_at: float
+    _parent: LeaseDeadline | None = None
+    _offset = 0.0
+    _not_after = math.inf
 
     def __new__(cls, expires_at: float) -> LeaseDeadline:
         instance = super().__new__(cls, expires_at)
-        instance.expires_at = expires_at
+        instance._expires_at = expires_at
         return instance
 
+    @property
+    def expires_at(self) -> float:
+        if self._parent is None:
+            return self._expires_at
+        return min(self._parent.expires_at - self._offset, self._not_after)
+
+    @expires_at.setter
+    def expires_at(self, expires_at: float) -> None:
+        if self._parent is not None:
+            raise AttributeError("a derived lease deadline follows its parent")
+        self._expires_at = expires_at
+
     def renew(self, expires_at: float) -> None:
-        self.expires_at = max(self.expires_at, expires_at)
+        if self._parent is not None:
+            self._parent.renew(min(expires_at, self._not_after) + self._offset)
+        else:
+            self._expires_at = max(self._expires_at, expires_at)
+
+    def offset(self, seconds: float) -> LeaseDeadline:
+        """A deadline ``seconds`` before this one that follows its renewals."""
+        return self._view(offset=seconds)
+
+    def cap(self, not_after: float) -> LeaseDeadline:
+        """This deadline, following renewals but never past ``not_after``."""
+        return self._view(not_after=not_after)
+
+    def _view(
+        self, *, offset: float = 0.0, not_after: float = math.inf
+    ) -> LeaseDeadline:
+        view = LeaseDeadline(min(self.expires_at - offset, not_after))
+        view._parent = self
+        view._offset = offset
+        view._not_after = not_after
+        return view
+
+    def __float__(self) -> float:
+        return float(self.expires_at)
+
+    def __repr__(self) -> str:
+        return f"LeaseDeadline({self.expires_at!r})"
+
+    def __add__(self, other: object) -> float:
+        if not isinstance(other, int | float):
+            return NotImplemented
+        return self.expires_at + float(other)
+
+    __radd__ = __add__
 
     def __sub__(self, other: object) -> float:
         if not isinstance(other, int | float):
             return NotImplemented
-        return self.expires_at - other
+        return self.expires_at - float(other)
+
+    def __rsub__(self, other: object) -> float:
+        if not isinstance(other, int | float):
+            return NotImplemented
+        return float(other) - self.expires_at
 
     def __lt__(self, other: object) -> bool:
         if not isinstance(other, int | float):
             return NotImplemented
-        return self.expires_at < other
+        return self.expires_at < float(other)
 
     def __le__(self, other: object) -> bool:
         if not isinstance(other, int | float):
             return NotImplemented
-        return self.expires_at <= other
+        return self.expires_at <= float(other)
 
     def __gt__(self, other: object) -> bool:
         if not isinstance(other, int | float):
             return NotImplemented
-        return self.expires_at > other
+        return self.expires_at > float(other)
 
     def __ge__(self, other: object) -> bool:
         if not isinstance(other, int | float):
             return NotImplemented
-        return self.expires_at >= other
+        return self.expires_at >= float(other)
 
 
 Deadline = float | None
@@ -1902,11 +1963,13 @@ class BuildGate:
                 report("submitting")
                 # A held image is supplemental evidence. Keep time to submit
                 # the authoritative quarantine even if export is slow.
-                image_deadline = (
-                    deadline - 30.0
-                    if held_source_review and deadline is not None
-                    else deadline
-                )
+                image_deadline = deadline
+                if held_source_review and deadline is not None:
+                    image_deadline = (
+                        deadline.offset(30.0)
+                        if isinstance(deadline, LeaseDeadline)
+                        else deadline - 30.0
+                    )
                 if (
                     exhausted := self._lease_exhausted(
                         image_deadline, "image export", policy_version=policy_version

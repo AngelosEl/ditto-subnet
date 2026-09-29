@@ -432,6 +432,130 @@ async def test_v13_court_hold_retains_verified_image_without_passing(
     assert not (tmp_path / "held-image.tar").exists()
 
 
+def test_lease_deadline_offset_tracks_renewal() -> None:
+    parent = LeaseDeadline(100.0)
+    child = parent.offset(30)
+
+    parent.renew(200.0)
+
+    assert child.expires_at == 170
+    assert float(child) == 170
+    assert float(parent) == 200
+    assert child < 171
+    assert child > 169
+    assert 200 - parent == 0
+    assert child - 70 == 100
+    assert 1 + child == 171
+    assert isinstance(child, LeaseDeadline)
+
+
+def test_nested_offset_delegates_renew() -> None:
+    parent = LeaseDeadline(100.0)
+    grandchild = parent.offset(30).offset(10)
+
+    grandchild.renew(500.0)
+
+    assert parent.expires_at == 540
+    assert grandchild.expires_at == 500
+
+
+def test_capped_lease_deadline_follows_renewal_up_to_its_cap() -> None:
+    parent = LeaseDeadline(100.0)
+    capped = parent.cap(250.0)
+
+    parent.renew(200.0)
+    assert float(capped) == 200
+    parent.renew(300.0)
+    assert float(capped) == 250
+
+
+def test_capped_view_renewal_does_not_extend_shared_lease_past_cap() -> None:
+    parent = LeaseDeadline(100.0)
+    capped = parent.cap(250.0)
+
+    capped.renew(600.0)
+
+    assert parent.expires_at == 250.0
+    assert capped.expires_at == 250.0
+
+    offset_capped = parent.offset(30.0).cap(300.0)
+    offset_capped.renew(600.0)
+    assert parent.expires_at == 330.0
+    assert offset_capped.expires_at == 300.0
+
+
+async def test_held_image_deadline_follows_renewal(
+    make_config: Callable[..., ScreenerConfig], tmp_path: Path
+) -> None:
+    tarball = _valid_tar()
+    gate = _gate_with(make_config(), _ok_run(), tarball=tarball)
+    loop = asyncio.get_running_loop()
+    lease = LeaseDeadline(loop.time() + 600)
+    held = ScreeningDecision(
+        outcome=ScreeningOutcome.QUARANTINE,
+        detail="source review incomplete",
+        manifest_digest="ab" * 32,
+        evidence=(PolicyEvidence("adjudication", "source-review-adjudicated", "held"),),
+        adjudication={"decision": "reject"},
+        policy_version=13,
+    )
+    uploads: list[str] = []
+
+    async def evaluate(*_args: Any, **_kwargs: Any) -> ScreeningDecision:
+        # Leave the held-image export only a sliver past its 30s margin.
+        lease.expires_at = loop.time() + gate_module._LEASE_MIN_STAGE_SECONDS + 30.2
+        return held
+
+    async def run_and_probe(*_args: Any, **_kwargs: Any) -> tuple[Any, Any]:
+        return gate_module._StageResult(True, ""), gate_module._AuditRuntime(
+            harness_base="http://harness:8080",
+            gateway_response_token="secret-a",
+            oracle_answer="secret-b",
+            gateway_state_file="/state/model-called",
+            tool_route="route",
+            tool_key=b"key",
+        )
+
+    async def export_image(
+        image_id: str, *, image_ref: str, deadline: float | None
+    ) -> BuiltImageArtifact:
+        await asyncio.sleep(0.3)
+        lease.renew(loop.time() + 600)
+        assert gate._lease_remaining(deadline) == pytest.approx(570, abs=1)
+        path = tmp_path / "held-image.tar"
+        path.write_bytes(b"held image")
+        return BuiltImageArtifact(
+            path=str(path),
+            sha256=hashlib.sha256(b"held image").hexdigest(),
+            size_bytes=10,
+            image_id=image_id,
+            image_ref=image_ref,
+        )
+
+    async def publish_held(image: BuiltImageArtifact) -> None:
+        uploads.append(image.sha256)
+
+    gate._policy.evaluate = evaluate  # type: ignore[method-assign]
+    gate._run_and_probe = run_and_probe  # type: ignore[method-assign]
+    gate._export_image = export_image  # type: ignore[method-assign]
+    async with gate._client:
+        result = await gate.screen(
+            agent_id=_AGENT,
+            attempt_id=_ATTEMPT,
+            bench_version=13,
+            miner_hotkey=_MINER,
+            sha256=hashlib.sha256(tarball).hexdigest(),
+            download_url=_URL,
+            policy_version=13,
+            deadline=lease,
+            publish_image=lambda _image: asyncio.sleep(0),
+            publish_held_image=publish_held,
+        )
+
+    assert result.outcome == ScreeningOutcome.QUARANTINE
+    assert uploads == [hashlib.sha256(b"held image").hexdigest()]
+
+
 @pytest.mark.parametrize("replay_probes", [False, True])
 async def test_v13_shadow_observation_runs_only_after_policy_decision(
     make_config: Callable[..., ScreenerConfig],
