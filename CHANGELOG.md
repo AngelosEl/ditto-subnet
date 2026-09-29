@@ -2,6 +2,21 @@
 
 <!-- version list -->
 
+## v0.329.1 (2026-09-29)
+
+### Bug Fixes
+
+- **screener**: Retain verified image for v13 court holds
+  ([#2516](https://github.com/ditto-assistant/ditto-subnet/pull/2516),
+  [`90b5e4c`](https://github.com/ditto-assistant/ditto-subnet/commit/90b5e4c05d62bc1e62d505ecdad00872bfa90630))
+
+### Documentation
+
+- Correct starter violation control identity
+  ([#2533](https://github.com/ditto-assistant/ditto-subnet/pull/2533),
+  [`bfeaf16`](https://github.com/ditto-assistant/ditto-subnet/commit/bfeaf16659cf25298d4d9f53917de0f9a36c4d31))
+
+
 ## v0.329.0 (2026-09-29)
 
 ### Features
