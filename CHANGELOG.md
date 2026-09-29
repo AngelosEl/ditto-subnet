@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.328.0 (2026-09-29)
+
+### Features
+
+- Add report-only canonical starter source control
+  ([#2525](https://github.com/ditto-assistant/ditto-subnet/pull/2525),
+  [`c7767c9`](https://github.com/ditto-assistant/ditto-subnet/commit/c7767c912914d423a315a97d1dbca82f3eef5524))
+
+
 ## v0.327.0 (2026-09-29)
 
 ### Features
