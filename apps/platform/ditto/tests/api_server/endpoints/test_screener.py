@@ -108,6 +108,7 @@ from ditto.db.models import (
     ScreeningReviewWindow,
     ScreeningVerificationReceipt,
     SubmissionImageBuild,
+    SubmissionSourceReview,
     TrustedImageBuild,
     ValidatorQueueWithdrawal,
     ValidatorTicket,
@@ -3823,6 +3824,29 @@ class TestQueue:
             headers={"Authorization": f"Bearer {_CONTROLLER_TOKEN}"},
         )
         assert controller_nodes.status_code == 200, controller_nodes.text
+        review_id = uuid4()
+        job_token = "legacy-off-source-review-job-token"
+        now = datetime.now(UTC)
+        async with session_maker() as session, session.begin():
+            session.add(
+                SubmissionSourceReview(
+                    review_id=review_id,
+                    agent_id=agent_id,
+                    attempt_id=UUID(claim.json()["items"][0]["attempt_id"]),
+                    environment="prod",
+                    artifact_sha256=_SHA256,
+                    status="running",
+                    job_token_hash=hashlib.sha256(job_token.encode()).hexdigest(),
+                    job_token_expires_at=now + timedelta(minutes=10),
+                    lease_expires_at=now + timedelta(minutes=10),
+                )
+            )
+        source = await client.get(
+            f"/api/v1/screener/submission-source-reviews/{review_id}/source",
+            headers={"Authorization": f"Bearer {job_token}"},
+        )
+        assert source.status_code == 200, source.text
+        assert source.json()["artifact_sha256"] == _SHA256
 
     async def test_dedicated_screener_needs_no_validator_permit(
         self,
@@ -11737,6 +11761,7 @@ class TestSubmitResult:
             "source-review-lease-budget-exhausted",
             "behavioral-oracle-passed",
             "l2-model-inconclusive",
+            "source-review-inconclusive",
         ],
     )
     async def test_v13_inconclusive_with_review_audit_persists(
@@ -11755,20 +11780,34 @@ class TestSubmitResult:
         _install_db(app, session_maker)
         _install_chain(app)
         audit = _bounded_review_audit(reason_code=reason_code)
-
+        payload = _result_payload(
+            agent_id,
+            passed=False,
+            policy_version=13,
+            attempt_id=attempt_id,
+            outcome="inconclusive",
+            manifest_digest="12" * 32,
+            reason_code=reason_code,
+            review_audit_digest=audit.canonical_digest(),
+            review_audit=audit.model_dump(mode="json"),
+        )
+        if reason_code == "source-review-inconclusive":
+            # The worker retains later oracle observations while signing the
+            # reason from the source reviewer that decided INCONCLUSIVE.
+            payload["evidence"] = [
+                {
+                    "module_id": "private-source-review",
+                    "code": reason_code,
+                    "summary": "bounded source review exhausted",
+                },
+                {
+                    "module_id": "oracle",
+                    "code": "behavioral-oracle-passed",
+                    "summary": "behavioral oracle completed",
+                },
+            ]
         response = await client.post(
-            f"/api/v1/screener/agent/{agent_id}/result",
-            json=_result_payload(
-                agent_id,
-                passed=False,
-                policy_version=13,
-                attempt_id=attempt_id,
-                outcome="inconclusive",
-                manifest_digest="12" * 32,
-                reason_code=reason_code,
-                review_audit_digest=audit.canonical_digest(),
-                review_audit=audit.model_dump(mode="json"),
-            ),
+            f"/api/v1/screener/agent/{agent_id}/result", json=payload
         )
 
         assert response.status_code == 200, response.text
@@ -11783,6 +11822,7 @@ class TestSubmitResult:
             )
             assert agent is not None and agent.status == AgentStatus.SCREENING_FAILED
             assert attempt is not None and attempt.status == "expired"
+            assert attempt.reason_code == reason_code
             assert quarantine is not None
             assert quarantine.reason_code == reason_code
             assert quarantine.review_audit_digest == audit.canonical_digest()

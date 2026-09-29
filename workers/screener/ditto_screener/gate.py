@@ -91,6 +91,7 @@ from ditto_screener.policy import (
     ReviewJournal,
     ScreeningDecision,
     ScreeningOutcome,
+    _bounded_reason_evidence,
     is_held_source_review,
     load_policy_engine,
     source_review_low_clearance_allowed,
@@ -557,7 +558,11 @@ def _with_image_binding_advisory(
     }:
         return decision
     evidence = (
-        *decision.evidence[:15],
+        *_bounded_reason_evidence(
+            decision.evidence,
+            reason_code=decision.reason_code,
+            limit=_MAX_EVIDENCE - 1,
+        ),
         PolicyEvidence("stable-core", "image-binding-heuristic", advisory[:240]),
     )
     return ScreeningDecision(
@@ -570,6 +575,7 @@ def _with_image_binding_advisory(
         adjudication=decision.adjudication,
         review_notes=decision.review_notes,
         policy_version=decision.policy_version,
+        reason_code=decision.reason_code or "image-binding-heuristic",
     )
 
 
@@ -1533,6 +1539,7 @@ class BuildGate:
                         adjudication=deferred.adjudication,
                         review_notes=deferred.review_notes,
                         policy_version=policy_version,
+                        reason_code=deferred.reason_code,
                     )
                 decision = _with_image_binding_advisory(
                     decision, self._image_binding_advisory(tmp_path)
@@ -1846,6 +1853,7 @@ class BuildGate:
                             source_decision.review_notes or decision.review_notes
                         ),
                         policy_version=policy_version,
+                        reason_code=source_decision.reason_code,
                     )
             if (
                 decision.outcome == ScreeningOutcome.PASS
@@ -1866,6 +1874,7 @@ class BuildGate:
                     adjudication=deferred.adjudication,
                     review_notes=deferred.review_notes,
                     policy_version=policy_version,
+                    reason_code=deferred.reason_code,
                 )
             # The image-binding advisory can only escalate a PASS to an
             # operator-reviewed QUARANTINE. The mechanical lane collected no

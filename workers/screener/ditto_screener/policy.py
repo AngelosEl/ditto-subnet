@@ -19,6 +19,7 @@ import hmac
 import json
 import logging
 import os
+import re
 import secrets
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -126,6 +127,23 @@ class PolicyEvidence:
             raise ValueError("evidence digest must be lowercase SHA-256 hex")
 
 
+def _bounded_reason_evidence(
+    evidence: Sequence[PolicyEvidence],
+    *,
+    reason_code: str | None,
+    limit: int = _MAX_EVIDENCE,
+) -> tuple[PolicyEvidence, ...]:
+    """Retain the deciding observation when bounding an evidence prefix."""
+    bounded = tuple(evidence[:limit])
+    if reason_code is not None and not any(
+        item.code == reason_code for item in bounded
+    ):
+        deciding = next((item for item in evidence if item.code == reason_code), None)
+        if deciding is not None:
+            bounded = (*bounded[:-1], deciding)
+    return bounded
+
+
 @dataclass(frozen=True)
 class ScreeningDecision:
     """Outcome returned by the stable core plus private policy engine."""
@@ -139,8 +157,14 @@ class ScreeningDecision:
     review_audit: Mapping[str, object] | None = None
     adjudication: Mapping[str, object] | None = None
     review_notes: tuple[Mapping[str, object], ...] = ()
+    reason_code: str | None = None
 
     def __post_init__(self) -> None:
+        if (
+            self.reason_code is not None
+            and re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", self.reason_code) is None
+        ):
+            raise ValueError("decision reason_code must be a bounded protocol code")
         if not (
             SCREENING_FLOOR_POLICY_VERSION
             <= self.policy_version
@@ -408,6 +432,7 @@ def core_decision(
         manifest_digest=CORE_ONLY_MANIFEST.digest,
         evidence=(PolicyEvidence("stable-core", code, summary),),
         policy_version=policy_version,
+        reason_code=code,
     )
 
 
@@ -1195,6 +1220,8 @@ class PolicyEngine:
         review_notes: tuple[Mapping[str, object], ...] = ()
         selected = False
         pass_inconclusive = False
+        selected_reason_code: str | None = None
+        pass_inconclusive_code: str | None = None
         # The mechanical lane does not collect source-review evidence. The
         # selector phase owns that work (source review, fingerprint, and timing
         # tripwires), so skip it entirely. Mechanical failures from the gate's
@@ -1211,6 +1238,11 @@ class PolicyEngine:
                 if terminal is not None:
                     if terminal == ScreeningOutcome.PASS_INCONCLUSIVE:
                         pass_inconclusive = True
+                        pass_inconclusive_code = pass_inconclusive_code or (
+                            result.evidence[0].code
+                            if result.evidence
+                            else "source-review-inconclusive"
+                        )
                         continue
                     return self._decision(
                         terminal,
@@ -1220,8 +1252,28 @@ class PolicyEngine:
                         adjudication=adjudication,
                         review_notes=review_notes,
                         policy_version=context.policy_version,
+                        reason_code=(
+                            (
+                                # A v13 court clear is held by the explicit
+                                # verification requirement appended by this module.
+                                result.evidence[-1].code
+                                if result.adjudication is not None
+                                and result.adjudication.get("decision") == "clear"
+                                and context.policy_version
+                                >= STRICT_TWO_OUTCOME_POLICY_VERSION
+                                else result.evidence[0].code
+                            )
+                            if result.evidence
+                            else f"policy-{terminal.value.replace('_', '-')}"
+                        ),
                     )
-                selected = selected or result.disposition == ModuleDisposition.TRIPWIRE
+                if result.disposition == ModuleDisposition.TRIPWIRE:
+                    selected = True
+                    selected_reason_code = selected_reason_code or (
+                        result.evidence[0].code
+                        if result.evidence
+                        else "source-finding-held"
+                    )
 
         # Mechanical admission proves that the submitted artifact can be
         # validated, built, started, isolated, and exported. It deliberately
@@ -1261,6 +1313,7 @@ class PolicyEngine:
                 adjudication=adjudication,
                 review_notes=review_notes,
                 policy_version=context.policy_version,
+                reason_code="challenge-inconclusive",
             )
         challenges = () if skip_challenges else configured_challenges
         cleared = False
@@ -1308,6 +1361,13 @@ class PolicyEngine:
                     adjudication=adjudication,
                     review_notes=review_notes,
                     policy_version=context.policy_version,
+                    reason_code=(
+                        # A pack can record earlier successful challenges; its
+                        # terminal observation is the last record in this module.
+                        result.evidence[-1].code
+                        if result.evidence
+                        else f"challenge-{terminal.value.replace('_', '-')}"
+                    ),
                 )
             cleared = cleared or (
                 module.clears_selection
@@ -1337,6 +1397,7 @@ class PolicyEngine:
                 adjudication=adjudication,
                 review_notes=review_notes,
                 policy_version=context.policy_version,
+                reason_code=selected_reason_code,
             )
 
         if pass_inconclusive:
@@ -1352,6 +1413,7 @@ class PolicyEngine:
                 adjudication=adjudication,
                 review_notes=review_notes,
                 policy_version=context.policy_version,
+                reason_code=pass_inconclusive_code,
             )
 
         return self._decision(
@@ -1374,8 +1436,9 @@ class PolicyEngine:
         adjudication: Mapping[str, object] | None = None,
         review_notes: tuple[Mapping[str, object], ...] = (),
         policy_version: int = SCREENING_POLICY_VERSION,
+        reason_code: str | None = None,
     ) -> ScreeningDecision:
-        bounded = tuple(evidence[:_MAX_EVIDENCE])
+        bounded = _bounded_reason_evidence(evidence, reason_code=reason_code)
         detail = ""
         if outcome == ScreeningOutcome.RETRYABLE_INFRA:
             detail = "screener error: private policy infrastructure unavailable"
@@ -1405,6 +1468,7 @@ class PolicyEngine:
             adjudication=adjudication,
             review_notes=review_notes,
             policy_version=policy_version,
+            reason_code=reason_code,
         )
 
     def malicious_preflight_decision(
@@ -1450,6 +1514,7 @@ class PolicyEngine:
                     review_audit=observation.review_audit,
                     review_notes=observation.notes,
                     policy_version=policy_version,
+                    reason_code="source-review-unavailable",
                 )
             evidence: tuple[PolicyEvidence, ...] = (
                 PolicyEvidence(
@@ -1484,6 +1549,9 @@ class PolicyEngine:
                 adjudication=adjudication,
                 review_notes=observation.notes,
                 policy_version=policy_version,
+                reason_code=(
+                    evidence[-1].code if held_clear else "source-review-adjudicated"
+                ),
             )
         if not observation.ok:
             retryable = observation.failure_disposition == "retryable_infra"
@@ -1515,6 +1583,7 @@ class PolicyEngine:
                 review_audit=observation.review_audit,
                 review_notes=observation.notes,
                 policy_version=policy_version,
+                reason_code=observation.error_code or "source-review-inconclusive",
             )
         if observation.risk_level == "low" and not source_review_low_clearance_allowed(
             observation, policy_version=policy_version
@@ -1533,6 +1602,7 @@ class PolicyEngine:
                 review_audit=observation.review_audit,
                 review_notes=observation.notes,
                 policy_version=policy_version,
+                reason_code="source-review-clearance-unproven",
             )
         if observation.risk_level not in {"medium", "high"}:
             raise ValueError("pre-execution source decision requires elevated risk")
@@ -1550,6 +1620,7 @@ class PolicyEngine:
             observation.finding,
             review_notes=observation.notes,
             policy_version=policy_version,
+            reason_code=code,
         )
 
 
