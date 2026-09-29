@@ -602,8 +602,20 @@ bypass. Medium/high findings require evidence for every category. Benchmark
 emulation and scorer-contract manipulation require at least two distinct,
 validated source locations covering the trigger and effect. Location-only
 review leads in the initial inventory are search prompts, not findings; the
-reviewer must prove they are reachable before citing them. The following are
-insufficient on their own:
+reviewer must prove they are reachable before citing them.
+
+The bounded rule leads and emulation fingerprints cover only miner-authored
+bytes. A file whose exact path and sha256 appear in a supported starter
+manifest is left out of both scans and counted in `trusted_starter_skipped`;
+one changed byte keeps all of its leads. Reachability, category guards,
+generator mirroring, and review-adaptation analysis still read every file.
+Executable and build files fill the lead cap before docs, data fixtures, and
+`scripts/` test modules, which keep their leads in whatever capacity remains.
+Fingerprints skip Rust test-only items and `scripts/` test modules, unless a
+build file enables `cfg(test)` (`--cfg`, `rustflags`, `rustc-cfg`,
+`cargo test`) or invokes that script.
+
+The following are insufficient on their own:
 
 - tuned parameters or multiple candidate profiles;
 - generic answer-slot parsing;

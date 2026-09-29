@@ -13,7 +13,14 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from ditto_screener.source_signals import find_benchmark_emulation_fingerprints
+import pytest
+
+from ditto_screener.rust_test_items import test_only_item_lines as rust_test_lines
+from ditto_screener.source_signals import (
+    find_benchmark_emulation_fingerprints,
+    mask_comments,
+)
+from scripts.generate_starter_provenance import starter_files
 
 _RUST_EMULATOR = """\
 // Ported from universe/world.go and the conversational.go generator so we
@@ -1348,3 +1355,131 @@ def test_keep_preference_findings_never_leak_matched_source_text() -> None:
         assert finding["category"] == "benchmark_emulation"
         for location in finding["locations"]:
             assert set(location) == {"path", "line", "role"}
+
+
+_STARTER_KIT = Path(__file__).resolve().parents[3] / "miners" / "dittobench-starter-kit"
+_ZERO_TOKEN_REPLY = """\
+pub fn build_reply(question: &str) -> RunResponse {
+    RunResponse {
+        answer: question.to_string(),
+        prompt_tokens: 0,
+        output_tokens: 0,
+    }
+}
+"""
+_TEST_ONLY_REPLY = (
+    "pub fn serve() {}\n\n#[cfg(test)]\nmod tests {\n    use super::*;\n\n"
+    + "".join(f"    {line}\n" for line in _ZERO_TOKEN_REPLY.splitlines())
+    + "}\n"
+)
+_SYNC_ANSWER_SCRIPT = """\
+def answer_case(question):
+    answer = lookup(question)
+    return answer
+"""
+
+
+def test_cfg_test_module_is_not_fingerprinted() -> None:
+    assert (
+        find_benchmark_emulation_fingerprints([("src/reply.rs", _TEST_ONLY_REPLY)])
+        == []
+    )
+    assert "zero-token-answer-constructor" in _kinds(
+        find_benchmark_emulation_fingerprints([("src/reply.rs", _ZERO_TOKEN_REPLY)])
+    )
+
+
+@pytest.mark.parametrize(
+    "build_file",
+    [
+        (".cargo/config.toml", '[build]\nrustflags = ["--cfg", "test"]\n'),
+        ("Dockerfile", 'FROM rust\nENV RUSTFLAGS="--cfg test"\nRUN cargo build\n'),
+        ("build.rs", 'fn main() { println!("cargo:rustc-cfg=test"); }\n'),
+    ],
+    ids=["cargo-config", "dockerfile-rustflags", "build-script"],
+)
+def test_test_items_stay_fingerprinted_when_the_build_enables_cfg_test(
+    build_file: tuple[str, str],
+) -> None:
+    # A test-gated item is only inert while the served binary is built
+    # without cfg(test); a build that turns it on keeps the old full scan.
+    files = [("src/reply.rs", _TEST_ONLY_REPLY), build_file]
+
+    assert "zero-token-answer-constructor" in _kinds(
+        find_benchmark_emulation_fingerprints(files)
+    )
+    assert find_benchmark_emulation_fingerprints(
+        [("src/reply.rs", _TEST_ONLY_REPLY)], build_context=[build_file]
+    )
+
+
+def test_scripts_test_modules_are_not_fingerprinted() -> None:
+    for path in ("scripts/test_rehearsal.py", "scripts/lab/rehearsal_test.py"):
+        assert (
+            find_benchmark_emulation_fingerprints([(path, _SYNC_ANSWER_SCRIPT)]) == []
+        ), path
+    # Only test modules under the top-level scripts/ tree are exempt.
+    for path in ("scripts/rehearsal.py", "tools/test_rehearsal.py", "test_answer.py"):
+        assert "sync-answer-constructor" in _kinds(
+            find_benchmark_emulation_fingerprints([(path, _SYNC_ANSWER_SCRIPT)])
+        ), path
+
+
+@pytest.mark.parametrize(
+    "build_file",
+    [
+        ("Dockerfile", 'FROM python\nCMD ["python", "scripts/test_rehearsal.py"]\n'),
+        ("Dockerfile", 'FROM python\nCMD ["python", "-m", "scripts.test_rehearsal"]\n'),
+        ("entrypoint.sh", "#!/bin/sh\nexec python scripts/test_rehearsal.py\n"),
+    ],
+    ids=["dockerfile-path", "dockerfile-module", "shell-entrypoint"],
+)
+def test_scripts_test_module_run_by_the_build_is_still_fingerprinted(
+    build_file: tuple[str, str],
+) -> None:
+    files = [("scripts/test_rehearsal.py", _SYNC_ANSWER_SCRIPT), build_file]
+
+    assert "sync-answer-constructor" in _kinds(
+        find_benchmark_emulation_fingerprints(files)
+    )
+
+
+def test_oversized_build_context_keeps_every_item_fingerprinted() -> None:
+    # Padding the build files past the scan bound must not hide a cfg(test)
+    # or script invocation; nothing is skipped when the bound is exceeded.
+    files = [
+        ("src/reply.rs", _TEST_ONLY_REPLY),
+        ("scripts/test_rehearsal.py", _SYNC_ANSWER_SCRIPT),
+        ("Cargo.lock", "#" * (8 * 1024 * 1024 + 1)),
+    ]
+
+    assert {"zero-token-answer-constructor", "sync-answer-constructor"} <= _kinds(
+        find_benchmark_emulation_fingerprints(files)
+    )
+
+
+def test_raw_starter_kit_fingerprints_skip_test_items_and_script_tests() -> None:
+    if not _STARTER_KIT.is_dir():
+        pytest.skip("the monorepo starter kit is not part of this checkout")
+    files = []
+    for relative in starter_files(_STARTER_KIT):
+        try:
+            files.append((relative, (_STARTER_KIT / relative).read_text()))
+        except UnicodeDecodeError:
+            continue
+    test_lines = {
+        path: rust_test_lines(mask_comments(text).splitlines())
+        for path, text in files
+        if path.endswith(".rs")
+    }
+
+    findings = find_benchmark_emulation_fingerprints(files)
+
+    for finding in findings:
+        for location in finding["locations"]:
+            path, line = str(location["path"]), int(location["line"])
+            name = path.rsplit("/", 1)[-1]
+            assert not (path.startswith("scripts/") and name.startswith("test_")), (
+                finding
+            )
+            assert line not in test_lines.get(path, frozenset()), finding

@@ -72,8 +72,10 @@ class _Fingerprint:
     comment-masked code view (``"code"``) or the raw view that also sees comments
     and strings (``"raw"``). ``skip_test_items`` blanks Rust items that an
     attribute affirmatively restricts to the test build (``#[test]``,
-    ``#[cfg(test)]``) before matching, for tells whose honest look-alike is the
-    same text parked in a test-only helper that ``/run`` never reaches.
+    ``#[cfg(test)]``) before matching: ``/run`` never reaches a test-only item
+    unless the build turns ``cfg(test)`` on, which keeps them scanned. It is on
+    for every fingerprint; set it to ``False`` only for a tell that is served
+    even when parked in test-gated code.
     """
 
     kind: str
@@ -84,7 +86,7 @@ class _Fingerprint:
     scan: str = "code"
     languages: frozenset[str] = frozenset()
     min_hits: int = 1
-    skip_test_items: bool = False
+    skip_test_items: bool = True
 
 
 def _words(value: str) -> re.Pattern[str]:
@@ -1671,7 +1673,6 @@ _EMULATION_FINGERPRINTS = (
         ),
         window=6,
         scan="code",
-        skip_test_items=True,
     ),
     _Fingerprint(
         # keep-continuity-capability-rekey (aceron_v21, 2026-09-16): the same
@@ -1715,7 +1716,6 @@ _EMULATION_FINGERPRINTS = (
         ),
         window=40,
         scan="code",
-        skip_test_items=True,
     ),
 )
 
@@ -1725,7 +1725,12 @@ def find_source_review_leads(
 ) -> list[dict[str, object]]:
     """Return bounded location-only review leads from readable source files."""
     leads: list[dict[str, object]] = []
-    for path, text in sorted(files, key=lambda item: _path_priority(item[0])):
+    # The lead cap is spent on executable and build files first. Docs, data
+    # fixtures, and script test modules keep their leads (a fixture can still
+    # be compiled in or read as an answer table), but only in the capacity
+    # the executable surface leaves, so they cannot starve a miner source file
+    # that happens to sort after them.
+    for path, text in sorted(files, key=lambda item: _lead_path_priority(item[0])):
         lines = text.splitlines()
         if not lines:
             continue
@@ -1898,6 +1903,8 @@ def _fingerprint_language(path: str) -> str | None:
 
 def find_benchmark_emulation_fingerprints(
     files: Iterable[tuple[str, str]],
+    *,
+    build_context: Iterable[tuple[str, str]] | None = None,
 ) -> list[dict[str, object]]:
     """Return bench-v12 anti-emulation fingerprints as location-only review leads.
 
@@ -1912,10 +1919,26 @@ def find_benchmark_emulation_fingerprints(
     serve/run entrypoint. Scanning is language-aware: each file is classified from
     its suffix, and a fingerprint whose tell is language-specific runs only on the
     languages it applies to.
+
+    Rust test-only items and ``scripts/`` test modules are not served, so they
+    are skipped -- unless the build files in ``build_context`` (default:
+    ``files``) turn ``cfg(test)`` on or invoke that script. Pass the whole
+    archive as ``build_context`` when ``files`` is a subset of it.
     """
+    files = list(files)
+    build_text = _build_control_text(files if build_context is None else build_context)
+    skip_rust_test_items = (
+        build_text is not None and _RUST_TEST_BUILD.search(build_text) is None
+    )
     findings: list[dict[str, object]] = []
     for path, text in sorted(files, key=lambda item: _path_priority(item[0])):
         if not _is_executable_source_path(path):
+            continue
+        if (
+            build_text is not None
+            and _is_script_test_module(path)
+            and _module_stem(path) not in build_text
+        ):
             continue
         language = _fingerprint_language(path)
         if language is None:
@@ -1931,7 +1954,11 @@ def find_benchmark_emulation_fingerprints(
                 continue
             scan_lines = code_lines if fingerprint.scan == "code" else raw_lines
             fingerprint_raw_lines = raw_lines
-            if fingerprint.skip_test_items and language == "rust":
+            if (
+                fingerprint.skip_test_items
+                and skip_rust_test_items
+                and language == "rust"
+            ):
                 if test_item_lines is None:
                     test_item_lines = _rust_test_item_lines(code_lines)
                 if test_item_lines:
@@ -2353,6 +2380,77 @@ def _is_executable_source_path(path: str) -> bool:
             )
         )
     )
+
+
+# Build inputs that can compile ``cfg(test)`` items into the served binary or
+# build a test harness instead of it: ``--cfg test`` in RUSTFLAGS or Cargo
+# ``rustflags``, a build script's ``rustc-cfg``, or ``cargo test`` / ``rustc
+# --test``. Any rustflags setting counts, so an indirect value fails closed.
+_RUST_TEST_BUILD = re.compile(
+    r"--cfg\b|rustc-cfg|rustflags|\bcargo\s+(?:\+\S+\s+)?test\b"
+    r"|\brustc\b[^\n]*\s--test\b",
+    re.IGNORECASE,
+)
+_MAX_BUILD_CONTROL_CHARS = 8 * 1024 * 1024
+
+
+def _is_build_control_path(path: str) -> bool:
+    """Files that shape the screened image; CI workflows do not."""
+    normalized = path.casefold().removeprefix("./")
+    parts = normalized.split("/")
+    name = parts[-1]
+    return not normalized.startswith(".github/") and (
+        _is_build_file(normalized)
+        or name.startswith("dockerfile")
+        or name.endswith(".dockerfile")
+        or (".cargo" in parts[:-1] and name in {"config", "config.toml"})
+    )
+
+
+def _build_control_text(files: Iterable[tuple[str, str]]) -> str | None:
+    """Casefolded text of the files that control the build.
+
+    Returns None past the size bound, so padding cannot push a directive out
+    of view: callers then skip nothing.
+    """
+    chunks: list[str] = []
+    size = 0
+    for path, text in files:
+        if not _is_build_control_path(path):
+            continue
+        size += len(text)
+        if size > _MAX_BUILD_CONTROL_CHARS:
+            return None
+        chunks.append(text.casefold())
+    return "\n".join(chunks)
+
+
+def _is_script_test_module(path: str) -> bool:
+    """A Python test module under the top-level ``scripts/`` tree.
+
+    A miner Dockerfile may copy and run ``scripts/``, so only test-named
+    modules qualify, and fingerprinting still scans one the build invokes.
+    """
+    normalized = path.casefold().removeprefix("./")
+    name = normalized.rsplit("/", 1)[-1]
+    return (
+        normalized.startswith("scripts/")
+        and name.endswith(".py")
+        and (name.startswith("test_") or name.endswith("_test.py"))
+    )
+
+
+def _module_stem(path: str) -> str:
+    """``scripts/test_x.py`` -> ``test_x``, matching file and ``-m`` invocations."""
+    return path.casefold().rsplit("/", 1)[-1].removesuffix(".py")
+
+
+def _lead_path_priority(path: str) -> tuple[int, int, str]:
+    """Executable and build files before every other file, then path order."""
+    executable = (
+        _is_executable_source_path(path) and not _is_script_test_module(path)
+    ) or _is_build_file(path)
+    return (0 if executable else 1, *_path_priority(path))
 
 
 def _path_priority(path: str) -> tuple[int, str]:
