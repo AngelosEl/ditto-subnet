@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.330.12 (2026-09-30)
+
+### Bug Fixes
+
+- **screener**: Require I5 causality for money prompts
+  ([#2581](https://github.com/ditto-assistant/ditto-subnet/pull/2581),
+  [`8d1d180`](https://github.com/ditto-assistant/ditto-subnet/commit/8d1d180cbab3dde6764da85625bb02d3eb62c135))
+
+
 ## v0.330.11 (2026-09-30)
 
 ### Bug Fixes
