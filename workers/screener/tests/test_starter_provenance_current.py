@@ -1,27 +1,38 @@
-"""Keep the newest trusted starter manifest equal to the monorepo starter kit.
+"""Keep the newest starter manifest equal to the monorepo kit, and staged.
 
-Source review exempts exact ``path + sha256`` starter matches from scrutiny and
-attributes everything else to the miner. A stale manifest therefore makes an
-unmodified kit look miner-authored, so every kit change must ship with the next
-manifest version.
+Source review exempts exact ``path + sha256`` starter matches from parts of its
+scrutiny and attributes everything else to the miner. A stale manifest makes an
+unmodified kit look miner-authored, so every kit change ships the next manifest
+version. That manifest is staged outside the runtime-loaded set: trusting it is
+a separate, reviewed activation change.
 """
 
 from __future__ import annotations
 
+import fnmatch
 import hashlib
 import json
 import os
+import shlex
 import subprocess
 import sys
+import tarfile
 from pathlib import Path
 
 import pytest
 
-from ditto_screener.source_review import _load_provenance_manifest
+from ditto_screener.l2_review import L2_STARTER_MANIFESTS, InProcessAnalyzerHarness
+from ditto_screener.source_review import (
+    OpenRouterSourceReviewAgent,
+    _load_provenance_manifest,
+)
 from scripts.generate_starter_provenance import (
     ORIGIN,
+    RUNTIME_MANIFESTS,
+    STAGED_MANIFESTS,
     manifest_drift,
     manifest_number,
+    manifests_in,
     newest_manifest,
     regenerate_command,
     starter_files,
@@ -30,8 +41,13 @@ from scripts.generate_starter_provenance import (
 SCREENER_ROOT = Path(__file__).resolve().parents[1]
 REPOSITORY_ROOT = SCREENER_ROOT.parents[1]
 STARTER_KIT = REPOSITORY_ROOT / "miners" / "dittobench-starter-kit"
-MANIFEST_DIR = SCREENER_ROOT / "ditto_screener" / "data"
 GENERATOR = SCREENER_ROOT / "scripts" / "generate_starter_provenance.py"
+# The report-only source control fixture (docs/canonical-starter-source-control.md)
+# packages the unchanged kit at v0.330.5, kit tree 9ffd5370e21b.
+CONTROL_FIXTURE = (
+    REPOSITORY_ROOT
+    / "apps/platform/ditto/api_server/data/canonical-starter-v0.330.5.tgz"
+)
 
 
 def starter_drift_failure(kit: Path, manifest: Path) -> str | None:
@@ -52,30 +68,129 @@ def starter_drift_failure(kit: Path, manifest: Path) -> str | None:
 def test_newest_manifest_covers_current_starter_kit() -> None:
     if not STARTER_KIT.is_dir():
         pytest.skip("the monorepo starter kit is not part of this checkout")
-    failure = starter_drift_failure(STARTER_KIT, newest_manifest(MANIFEST_DIR))
+    newest = newest_manifest(RUNTIME_MANIFESTS, STAGED_MANIFESTS)
+    failure = starter_drift_failure(STARTER_KIT, newest)
     if failure is not None:
         pytest.fail(failure, pytrace=False)
 
 
 def test_newest_manifest_is_a_loadable_monorepo_manifest() -> None:
-    newest = newest_manifest(MANIFEST_DIR)
+    newest = newest_manifest(RUNTIME_MANIFESTS, STAGED_MANIFESTS)
     manifest = _load_provenance_manifest(newest)
     files = manifest["files"]
     assert isinstance(files, dict) and files
     assert manifest["version"] == 1
     assert manifest["origin"] == ORIGIN
     assert len(str(manifest["revision"])) == 40
+    # Nothing the starter ``submit`` packager excludes is ever trusted.
     assert not [
         path
         for path in files
-        if path.split("/", 1)[0] in {".agents", ".claude", ".git", "target"}
+        if {".agents", ".claude", ".git", "target"} & set(path.split("/"))
+        or path.rsplit("/", 1)[-1].startswith(".env")
     ]
-    numbers = [
-        manifest_number(path)
-        for path in MANIFEST_DIR.glob("starter-kit-provenance-*.json")
-    ]
+
+
+def test_staged_and_runtime_manifests_share_one_version_sequence() -> None:
+    runtime = manifests_in(RUNTIME_MANIFESTS)
+    staged = manifests_in(STAGED_MANIFESTS)
+    numbers = [manifest_number(path) for path in (*runtime, *staged)]
+    # Activation moves a staged file without renaming it, so a version lives
+    # in exactly one directory.
     assert len(numbers) == len(set(numbers))
-    assert manifest_number(newest) == max(numbers)
+    runtime_revisions = {
+        _load_provenance_manifest(path)["revision"] for path in runtime
+    }
+    for path in staged:
+        manifest = _load_provenance_manifest(path)
+        assert manifest["version"] == 1
+        assert manifest["origin"] == ORIGIN
+        assert manifest["revision"] not in runtime_revisions
+
+
+def test_v6_describes_exactly_the_canonical_starter_control_fixture() -> None:
+    if not CONTROL_FIXTURE.is_file():
+        pytest.skip("the canonical starter control fixture is not in this checkout")
+    (manifest,) = [
+        path
+        for path in manifests_in(RUNTIME_MANIFESTS, STAGED_MANIFESTS)
+        if manifest_number(path) == 6
+    ]
+    fixture: dict[str, str] = {}
+    with tarfile.open(CONTROL_FIXTURE, mode="r:gz") as archive:
+        for member in archive:
+            extracted = archive.extractfile(member) if member.isfile() else None
+            if extracted is not None:
+                name = member.name.removeprefix("./")
+                fixture[name] = hashlib.sha256(extracted.read()).hexdigest()
+
+    # Evidence from reviewing that fixture covers v6 exactly: the same
+    # files with the same bytes, and nothing else.
+    assert json.loads(manifest.read_text())["files"] == fixture
+
+
+def _copied_sources(dockerfile: Path, context: Path) -> list[str]:
+    """Build-context sources of every ``COPY``/``ADD`` that reads the context."""
+    sources: list[str] = []
+    for line in dockerfile.read_text().replace("\\\n", " ").splitlines():
+        if line.split(maxsplit=1)[:1] not in (["COPY"], ["ADD"]):
+            continue
+        arguments = shlex.split(line)[1:]
+        if any(word.startswith("--from=") for word in arguments):
+            continue
+        paths = [word for word in arguments if not word.startswith("--")]
+        sources.extend(str((context / path).resolve()) for path in paths[:-1])
+    return sources
+
+
+def _copied(path: Path, sources: list[str]) -> bool:
+    resolved = str(path.resolve())
+    return any(
+        fnmatch.fnmatchcase(resolved, source) or resolved.startswith(source + "/")
+        for source in sources
+    )
+
+
+def test_no_runtime_loader_or_image_sees_a_staged_manifest(tmp_path: Path) -> None:
+    runtime = manifests_in(RUNTIME_MANIFESTS)
+    staged = manifests_in(STAGED_MANIFESTS)
+    assert runtime
+    # The staging directory lives outside the ``ditto_screener`` package.
+    assert not STAGED_MANIFESTS.resolve().is_relative_to(
+        (SCREENER_ROOT / "ditto_screener").resolve()
+    )
+
+    # L2's starter revisions, the L1 provenance block and the static
+    # preflight's default trust set, and the in-process analyzer.
+    assert list(L2_STARTER_MANIFESTS) == runtime
+    key = tmp_path / "key"
+    key.write_text("unused")
+    agent = OpenRouterSourceReviewAgent(
+        api_key_file=str(key),
+        model="unused",
+        base_url="https://openrouter.test/api/v1",
+        timeout_seconds=1,
+        max_steps=1,
+    )
+    assert agent._provenance_manifest_files == tuple(str(path) for path in runtime)
+    assert (
+        InProcessAnalyzerHarness()._manifests.resolve() == RUNTIME_MANIFESTS.resolve()
+    )
+
+    # The analyzer image bakes exactly the runtime set, and neither image
+    # copies the staging directory.
+    analyzer = _copied_sources(
+        SCREENER_ROOT / "deploy" / "l2-analyzer.Dockerfile", SCREENER_ROOT
+    )
+    screener = _copied_sources(SCREENER_ROOT / "Dockerfile", REPOSITORY_ROOT)
+    assert [
+        path
+        for path in sorted(RUNTIME_MANIFESTS.iterdir())
+        if path.suffix == ".json" and _copied(path, analyzer)
+    ] == runtime
+    for path in (*staged, STAGED_MANIFESTS / "starter-kit-provenance-v999.json"):
+        assert not _copied(path, analyzer), path
+        assert not _copied(path, screener), path
 
 
 def _git(root: Path, *args: str) -> str:
@@ -105,6 +220,7 @@ def _starter_repository(tmp_path: Path) -> Path:
         "src/lib.rs": "pub fn tracked() {}\n",
         "scripts/run.sh": "#!/bin/sh\nexec true\n",
         ".env.example": "OPENROUTER_API_KEY=\n",
+        "config/.env.production": "OPENROUTER_API_KEY=secret\n",
         ".env": "OPENROUTER_API_KEY=secret\n",
         ".env.local": "OPENROUTER_API_KEY=secret\n",
         ".agents/skills/mine/SKILL.md": "skill\n",
@@ -155,10 +271,10 @@ def test_generator_trusts_only_tracked_submittable_regular_files(
     files = starter_files(kit)
 
     # Symlinks, dev skills, secrets, local DBs, submission tarballs, build
-    # output, and untracked files are never trusted. The committed template
-    # and a plain .tar, which starter ``submit`` does package, are.
+    # output, and untracked files are never trusted. Starter ``submit``
+    # excludes ``.env.*``, so the committed ``.env.example`` template is not
+    # trusted either. A plain .tar, which ``submit`` does package, is.
     assert sorted(files) == [
-        ".env.example",
         "fixtures/sample.tar",
         "scripts/run.sh",
         "src/lib.rs",
@@ -187,7 +303,10 @@ def test_drift_guard_fails_on_one_byte_with_the_regenerate_command(
     assert "added: src/extra.rs" in failure
     assert "removed: scripts/run.sh" in failure
     assert regenerate_command(7) in failure
-    assert "starter-kit-provenance-v7.json" in failure
+    assert (
+        "--output workers/screener/staged-starter-provenance/"
+        "starter-kit-provenance-v7.json"
+    ) in failure
 
 
 def test_generator_is_reproducible_and_pins_the_last_kit_commit(
@@ -234,9 +353,43 @@ def test_generator_refuses_uncommitted_kit_and_rewriting_a_manifest(
     assert _generate(kit, tmp_path / "starter-kit-provenance-v7.json").returncode == 0
 
 
-def test_newest_manifest_orders_versions_numerically(tmp_path: Path) -> None:
-    for number in (1, 9, 10, 2):
-        (tmp_path / f"starter-kit-provenance-v{number}.json").write_text("{}")
-    (tmp_path / "bench-categories-v1.json").write_text("{}")
+def test_generator_never_writes_into_the_runtime_manifest_set(
+    tmp_path: Path,
+) -> None:
+    kit = _starter_repository(tmp_path)
+    before = set(RUNTIME_MANIFESTS.iterdir())
+    active = newest_manifest(RUNTIME_MANIFESTS)
+    target = RUNTIME_MANIFESTS / (
+        f"starter-kit-provenance-v{manifest_number(active) + 100}.json"
+    )
 
-    assert newest_manifest(tmp_path).name == "starter-kit-provenance-v10.json"
+    try:
+        # Trusting a manifest is an explicit activation change, never
+        # generator output: neither a new runtime file nor an active version.
+        into_runtime = _generate(kit, target)
+        reused = _generate(kit, tmp_path / active.name)
+    finally:
+        for created in set(RUNTIME_MANIFESTS.iterdir()) - before:
+            created.unlink()
+
+    assert into_runtime.returncode == 1
+    assert "runtime-loaded trust set" in into_runtime.stderr
+    assert not target.exists()
+    assert reused.returncode == 1
+    assert "already an active manifest" in reused.stderr
+    assert not (tmp_path / active.name).exists()
+
+
+def test_newest_manifest_orders_versions_numerically(tmp_path: Path) -> None:
+    runtime, staged = tmp_path / "runtime", tmp_path / "staged"
+    runtime.mkdir()
+    staged.mkdir()
+    for number in (1, 9, 2):
+        (runtime / f"starter-kit-provenance-v{number}.json").write_text("{}")
+    (staged / "starter-kit-provenance-v10.json").write_text("{}")
+    (runtime / "bench-categories-v1.json").write_text("{}")
+
+    assert newest_manifest(runtime).name == "starter-kit-provenance-v9.json"
+    assert newest_manifest(runtime, staged) == (
+        staged / "starter-kit-provenance-v10.json"
+    )
