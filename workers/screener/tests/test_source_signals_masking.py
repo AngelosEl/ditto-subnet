@@ -639,6 +639,54 @@ def test_the_maintainers_swift_comment_is_not_a_decisive_finding() -> None:
     )
 
 
+@pytest.mark.parametrize("verb", ["read", "exec(read"])
+def test_inert_swift_prompt_is_not_a_decisive_effect(verb: str) -> None:
+    source = f'let prompt = "{verb}(\\"/root/.ssh/id_rsa\\")"\nprint(prompt)\n'
+    assert _decisive("Sources/main.swift", source) == []
+
+
+@pytest.mark.parametrize("multiline", [False, True])
+@pytest.mark.parametrize("binding", [False, True])
+def test_swift_shell_credential_payload_remains_decisive(
+    multiline: bool, binding: bool
+) -> None:
+    literal = (
+        '"""\ncat /root/.ssh/id_rsa\n"""' if multiline else '"cat /root/.ssh/id_rsa"'
+    )
+    source = "import Foundation\n"
+    if binding:
+        source += f"let script = {literal}\n"
+    source += (
+        "let p = Process()\n"
+        'p.executableURL = URL(fileURLWithPath: "/bin/sh")\n'
+        f'p.arguments = ["-c", {"script" if binding else literal}]\n'
+        "try p.run()\n"
+    )
+    assert "credential_access" in {
+        f["category"] for f in _decisive("Sources/main.swift", source)
+    }
+
+
+def test_swift_echo_prompt_does_not_execute_prompt() -> None:
+    source = (
+        'let prompt = "read(\\"/root/.ssh/id_rsa\\")"\n'
+        "let p = Process()\n"
+        'p.executableURL = URL(fileURLWithPath: "/bin/echo")\n'
+        "p.arguments = [prompt]\ntry p.run()\n"
+    )
+    assert _decisive("Sources/main.swift", source) == []
+
+
+def test_swift_nearest_safe_assignment_does_not_revive_payload() -> None:
+    source = (
+        'var script = "cat /root/.ssh/id_rsa"\nscript = "echo hello"\n'
+        "let p = Process()\n"
+        'p.executableURL = URL(fileURLWithPath: "/bin/sh")\n'
+        'p.arguments = ["-c", script]\ntry p.run()\n'
+    )
+    assert _decisive("Sources/main.swift", source) == []
+
+
 # Inline and whole-line comments in each C-comment language main's generic
 # scanner used to mask. Each raised credential_access and cross_user_access
 # from the comment alone; the same call as code still does.

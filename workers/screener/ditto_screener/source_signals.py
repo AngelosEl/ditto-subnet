@@ -16,6 +16,7 @@ from typing import cast
 from ditto_screener.rust_test_items import test_only_item_lines
 from ditto_screener.source_masking import (
     mask_comments,
+    mask_effect_literals,
     mask_lead_comments,
     mask_proven_comments,
     mask_string_literals,
@@ -26,7 +27,9 @@ _MAX_LEADS_PER_RULE_FILE = 4
 _WINDOW_LINES = 18
 _MAX_STATIC_FINDINGS = 16
 _COMMAND_EXECUTION_EFFECT = re.compile(
-    r"\b(?:Command::new|subprocess\.|os\.system|child_process\.|execFile|spawn)\b"
+    r"\b(?:Command::new|subprocess\.|os\.system|child_process\.|execFile|spawn|"
+    r"ProcessBuilder|Process\.(?:run|start|Start)|Runtime(?:\.getRuntime\(\))?\.exec)\b"
+    r"|\b(?:shell_exec|system|popen|exec|eval|execSync)\s*\("
 )
 
 
@@ -1874,8 +1877,11 @@ def _static_findings(
     findings: list[dict[str, object]] = []
     comment_masked = comment_masked_text.splitlines()
     comment_masked.extend([""] * (len(lines) - len(comment_masked)))
-    executable_lines = mask_string_literals(comment_masked_text, path).splitlines()
+    executable_lines = mask_effect_literals(comment_masked_text, path).splitlines()
     executable_lines.extend([""] * (len(lines) - len(executable_lines)))
+    command_payload_lines = _command_payload_lines(
+        path, comment_masked, executable_lines
+    )
     for rule in _STATIC_MALICIOUS_RULES:
         role_hits = {
             role.name: [
@@ -1886,6 +1892,7 @@ def _static_findings(
                         role.name,
                         line[:4096],
                         executable_lines[line_number - 1][:4096],
+                        command_payload=line_number in command_payload_lines,
                     )
                 )
                 and line.strip()
@@ -2109,7 +2116,11 @@ def mask_remote_urls(line: str) -> str:
 
 
 def _static_role_search_text(
-    role_name: str, source_line: str, executable_line: str
+    role_name: str,
+    source_line: str,
+    executable_line: str,
+    *,
+    command_payload: bool = False,
 ) -> str:
     """Keep dangerous targets visible while requiring effects to be executable.
 
@@ -2125,11 +2136,91 @@ def _static_role_search_text(
     """
     if role_name == "cross-user-path":
         return mask_remote_urls(source_line)
-    if not role_name.endswith("effect") or _COMMAND_EXECUTION_EFFECT.search(
-        source_line
+    if (
+        not role_name.endswith("effect")
+        or command_payload
+        or _COMMAND_EXECUTION_EFFECT.search(executable_line)
     ):
         return source_line
     return executable_line
+
+
+def _command_payload_lines(
+    path: str, source_lines: list[str], executable_lines: list[str]
+) -> set[int]:
+    """Keep nearby literal bindings consumed by a concrete command sink.
+
+    Only executable text can identify a sink or variable use: a prompt that
+    mentions ``exec`` must not enable itself. This is bounded local def/use
+    matching, not a complete language dataflow proof. Unmatched source stays
+    available to the source reviewer and ordinary review leads.
+    """
+    sinks = {
+        i
+        for i, line in enumerate(executable_lines)
+        if _COMMAND_EXECUTION_EFFECT.search(line)
+    }
+    if path.casefold().endswith(".swift"):
+        # Foundation Process interprets the payload only when the same
+        # process runs a shell/interpreter with its command flag. Ordinary
+        # Process arguments (e.g. echo printing a prompt) remain inert data.
+        for i, line in enumerate(executable_lines):
+            match = re.search(
+                r"\b(?:let|var)\s+(\w+)\s*=\s*(?:Foundation\.)?Process\s*\(", line
+            )
+            if match is None:
+                continue
+            name = re.escape(match[1])
+            end = min(len(executable_lines), i + _WINDOW_LINES + 1)
+            window = range(i + 1, end)
+            if not any(
+                re.search(rf"\b{name}\.run\s*\(", executable_lines[j]) for j in window
+            ):
+                continue
+            if not any(
+                re.search(rf"\b{name}\.executableURL\s*=", executable_lines[j])
+                and re.search(
+                    r'["\']/(?:usr/)?bin/(?:sh|bash|dash|zsh|python[0-9.]*)["\']',
+                    source_lines[j],
+                )
+                for j in window
+            ):
+                continue
+            sinks.update(
+                j
+                for j in window
+                if re.search(rf"\b{name}\.arguments\s*=", executable_lines[j])
+                and re.search(r'["\']-c["\']', source_lines[j])
+            )
+    payload: set[int] = set()
+    assignment = re.compile(r"(?<![\w.])(\w+)\s*(?::\s*[^=\n]+)?\s*=(?!=)")
+    for sink in sinks:
+        # Direct literals passed to a sink are operational payload too.
+        payload.add(sink + 1)
+        for k in range(sink + 1, min(len(executable_lines), sink + _WINDOW_LINES + 1)):
+            if executable_lines[k].strip():
+                break
+            if source_lines[k] != executable_lines[k]:
+                payload.add(k + 1)
+        names = set(re.findall(r"\b[A-Za-z_]\w*\b", executable_lines[sink]))
+        for name in names:
+            for j in range(sink - 1, max(-1, sink - _WINDOW_LINES - 1), -1):
+                bindings = [
+                    m for m in assignment.finditer(executable_lines[j]) if m[1] == name
+                ]
+                if not bindings:
+                    continue
+                # The nearest assignment wins, including an overwrite with
+                # code or a safe literal. Do not revive an older payload.
+                if source_lines[j] != executable_lines[j]:
+                    payload.add(j + 1)
+                    for k in range(j + 1, sink):
+                        if executable_lines[k].strip():
+                            break
+                        if source_lines[k] != executable_lines[k]:
+                            payload.add(k + 1)
+                break
+    return payload
 
 
 def _is_build_file(path: str) -> bool:

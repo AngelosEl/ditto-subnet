@@ -292,6 +292,32 @@ def mask_string_literals(text: str, path: str) -> str:
     return text if kinds is None else _blank(text, kinds, _STRING)
 
 
+def mask_effect_literals(text: str, path: str) -> str:
+    """Exact code view for operational roles, retaining interpolation code.
+
+    Unlike the general scanner view, this also masks literals in languages
+    whose strings can become process payloads. The decisive scanner restores
+    those payloads only at an observed command sink. Unknown or undecidable
+    syntax is left whole; this never guesses where a literal ends.
+    """
+    if language_for_path(path) not in {
+        *_STRING_MASKED_LANGUAGES,
+        "java",
+        "kotlin",
+        "csharp",
+        "dart",
+        "php",
+        "zig",
+        "swift",
+        "scala",
+        "groovy",
+        "fsharp",
+    }:
+        return text
+    kinds = _kinds_for(text, path)
+    return text if kinds is None else _blank(text, kinds, _STRING)
+
+
 def mask_python_code(text: str) -> str | None:
     """Blank Python comments and literals, or ``None`` if it does not tokenize.
 
