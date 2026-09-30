@@ -194,6 +194,37 @@ _LANGUAGE_TABLE = [
         (),
         id="swift",
     ),
+    pytest.param(
+        "src/Main.scala",
+        'val u = s"http://${f("/*")}/y"; val c = \'/\' // d\n'
+        '/* a /* b */ c */ val t = """a // "q" """"; val `n // x` = \'sym\n',
+        ("// d", "/* a /* b */ c */"),
+        (),
+        id="scala",
+    ),
+    pytest.param(
+        "build.gradle",
+        "def u = 'http://x/y'; def g = \"${f('/*')} // no\"; def q = a / 2 // c\n"
+        "/* a // b */ task t { doLast { println '''x // y''' } }\n",
+        ("// c", "/* a // b */"),
+        (),
+        id="gradle",
+    ),
+    pytest.param(
+        "src/App.fs",
+        'let u = "http://x/y" // c\nlet i = (*) 2 3 (* a (* b "*)" *) c *) + 1\n'
+        'let v = @"C:\\x"" // no"; let f x\' = x\' / 2\n',
+        ("// c", '(* a (* b "*)" *) c *)'),
+        (),
+        id="fsharp",
+    ),
+    pytest.param(
+        "src/Bridge.mm",
+        'NSString *s = @"a // b"; // c\nconst char *r = R"x( /* )x"; /* d */\n',
+        ("// c", "/* d */"),
+        ('"a // b"', 'R"x( /* )x"'),
+        id="objective-c++",
+    ),
 ]
 
 
@@ -436,9 +467,10 @@ def test_a_zig_comment_raises_no_source_review_lead() -> None:
 
 
 # Each comment raised a challenge-shaped-retrieval-override lead whose roles
-# all cited the comment, when its language had no lexer (Zig and Swift now
-# have one; the rest rely on the comment-line view) or its lexer left the
-# file unmasked (the JSX and Java files). The same words as code still do.
+# all cited the comment, when its language had no lexer (Zig, Swift, Scala,
+# Groovy and F# now have one; the rest rely on the comment-line view) or its
+# lexer left the file unmasked (the JSX and Java files). The same words as
+# code still do.
 @pytest.mark.parametrize(
     ("path", "comment", "code"),
     [
@@ -606,7 +638,7 @@ def test_the_maintainers_swift_comment_is_not_a_decisive_finding() -> None:
     )
 
 
-# Inline and whole-line comments in a C-comment language main's generic
+# Inline and whole-line comments in each C-comment language main's generic
 # scanner used to mask. Each raised credential_access and cross_user_access
 # from the comment alone; the same call as code still does.
 @pytest.mark.parametrize(
@@ -618,6 +650,41 @@ def test_the_maintainers_swift_comment_is_not_a_decisive_finding() -> None:
             f"/**\n {_READ_KEY}\n */\nfunc main() {{}}\n",
             f"let key = {_READ_KEY}\n",
             id="swift",
+        ),
+        pytest.param(
+            "src/Main.scala",
+            f"object M {{}} // {_READ_KEY}\n",
+            f"/* {_READ_KEY} */\nobject M\n",
+            f"val key = {_READ_KEY}\n",
+            id="scala",
+        ),
+        pytest.param(
+            "src/app.groovy",
+            f"def m() {{}} // {_READ_KEY}\n",
+            f"// {_READ_KEY}\ndef m() {{}}\n",
+            f"def key = {_READ_KEY}\n",
+            id="groovy",
+        ),
+        pytest.param(
+            "build.gradle",
+            f"apply plugin: 'java' // {_READ_KEY}\n",
+            f"/* {_READ_KEY} */\napply plugin: 'java'\n",
+            f"def key = {_READ_KEY}\n",
+            id="gradle",
+        ),
+        pytest.param(
+            "src/App.fs",
+            f"let m () = () // {_READ_KEY}\n",
+            f"(* {_READ_KEY} *)\nlet m () = ()\n",
+            f"let key = {_READ_KEY}\n",
+            id="fsharp",
+        ),
+        pytest.param(
+            "src/Bridge.mm",
+            f"int main() {{}} // {_READ_KEY}\n",
+            f"/* {_READ_KEY} */\nint main() {{}}\n",
+            f"auto key = {_READ_KEY};\n",
+            id="objective-c++",
         ),
     ],
 )
@@ -1105,7 +1172,12 @@ def test_python_that_does_not_tokenize_still_masks_hash_comments() -> None:
         ("public/index.php", "php"),
         ("src/main.zig", "zig"),
         ("Sources/main.swift", "swift"),
-        ("src/Main.scala", None),
+        ("src/Main.scala", "scala"),
+        ("src/app.groovy", "groovy"),
+        ("build.gradle", "groovy"),
+        ("src/App.fs", "fsharp"),
+        ("src/Bridge.mm", "c"),
+        ("src/Bridge.m", None),
         ("docker/Dockerfile.dev", "dockerfile"),
         ("build/app.dockerfile", "dockerfile"),
         ("Containerfile", "dockerfile"),
@@ -1396,6 +1468,10 @@ _FUZZ_PATHS = [
     "a.php",
     "a.zig",
     "a.swift",
+    "a.scala",
+    "a.groovy",
+    "a.fs",
+    "a.mm",
     "a.rb",
     "a.ml",
     "pom.xml",
@@ -1434,6 +1510,12 @@ def test_masking_never_raises_and_only_blanks_on_arbitrary_text() -> None:
         pytest.param("src/a.php", "<?php " + '"$a' * 60_000, id="php-fields"),
         pytest.param("src/main.zig", "'\\" * 100_000, id="zig-escapes"),
         pytest.param("src/a.m", "/*\n" * 50_000, id="unlexed-block-openers"),
+        pytest.param("src/a.swift", '"\\(' * 50_000, id="swift-open-interpolations"),
+        pytest.param("src/a.swift", "(/x" * 60_000, id="swift-slashes"),
+        pytest.param("src/a.swift", "#" * 100_000 + '"', id="swift-pounds"),
+        pytest.param("src/a.scala", 's"${' * 50_000, id="scala-open-fields"),
+        pytest.param("src/a.groovy", '"${' * 50_000, id="groovy-open-fields"),
+        pytest.param("src/a.fs", "(*" * 100_000, id="fsharp-nested-comments"),
     ],
 )
 def test_crafted_sources_lex_in_linear_time(path: str, source: str) -> None:

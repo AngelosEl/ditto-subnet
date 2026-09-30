@@ -93,6 +93,16 @@ _LANGUAGE_BY_SUFFIX = {
     ".php": "php",
     ".zig": "zig",
     ".swift": "swift",
+    ".scala": "scala",
+    ".sc": "scala",
+    ".groovy": "groovy",
+    ".gradle": "groovy",
+    ".fs": "fsharp",
+    ".fsi": "fsharp",
+    ".fsx": "fsharp",
+    # Objective-C++ lexes as C++. ``.m`` is left out: MATLAB and Octave share
+    # it, and there ``'`` transposes and a backslash in a string is literal.
+    ".mm": "c",
     ".py": "python",
     ".pyi": "python",
     ".pyw": "python",
@@ -145,6 +155,9 @@ _SHEBANG_LANGUAGES = frozenset(
         "dart",
         "php",
         "swift",
+        "scala",
+        "groovy",
+        "fsharp",
     }
 )
 
@@ -1371,6 +1384,377 @@ def _lex_swift(text: str) -> bytearray | None:
         index = end
 
 
+# Scala: nested block comments; plain strings with escapes; raw ``"""``
+# strings; ``id"..."``/``id"""..."""`` interpolations whose ``${...}`` fields
+# are code; char literals (``'a'``) beside symbol literals and quotes
+# (``'sym``, ``'{...}``); backquoted names. Left unmasked: an XML literal,
+# which starts at a ``<`` after a blank, ``(`` or ``{`` and before a name (its
+# text is not Scala, and ``{...}`` inside it is code); a Unicode escape, which
+# Scala 2.12 translates before lexing; and ``\\"`` or ``$"`` inside an
+# interpolation, which Scala versions end at different places.
+_SCALA_TOKEN = re.compile(r'//|/\*|[^\W\d]\w*"""|[^\W\d]\w*"|"""|"|[\'`{}<]')
+_SCALA_UNSUPPORTED = _JAVA_UNICODE_ESCAPE
+_SCALA_STRING = re.compile(r'"(?:[^"\\\r\n]|\\[^\r\n])*"')
+_SCALA_CHAR = re.compile(r"'(?:[^'\\\r\n]|\\(?:u+[0-9A-Fa-f]{4}|[0-7]{1,3}|[^\r\n]))'")
+_SCALA_BACKTICK = re.compile(r"`[^`\r\n]+`")
+_SCALA_XML_NAME = re.compile(r"[^\W\d]|[_!?]")
+_SCALA_INTERPOLATION_STOP = {
+    False: re.compile(r'\$\$|\$\{|\$"|\\"|"|[\r\n]'),
+    True: re.compile(r'\$\$|\$\{|\$"|"""'),
+}
+
+
+def _scala_interpolation_rest(
+    text: str, kinds: bytearray, mark_from: int, scan_from: int, multiline: bool
+) -> tuple[int, bool] | None:
+    """Mark interpolated text up to its close or its next ``${`` field."""
+    stop_pattern = _SCALA_INTERPOLATION_STOP[multiline]
+    index = scan_from
+    while (stop := stop_pattern.search(text, index)) is not None:
+        value = stop.group()
+        if value == "$$":
+            index = stop.end()
+            continue
+        if value == "${":
+            _mark(kinds, mark_from, stop.start(), _STRING)
+            return stop.end(), True
+        if value in {'"', '"""'}:
+            end = stop.end()
+            if multiline:
+                while text.startswith('"', end):
+                    end += 1
+            _mark(kinds, mark_from, end, _STRING)
+            return end, False
+        return None
+    return None
+
+
+def _lex_scala(text: str) -> bytearray | None:
+    """Scala: nested comments, raw and interpolated strings, char literals."""
+    if _SCALA_UNSUPPORTED.search(text):
+        return None
+    kinds = bytearray(len(text))
+    # For each open ``${`` field: whether it resumes a multi-line string, and
+    # the braces opened inside it.
+    forms: list[bool] = []
+    depths: list[int] = []
+    index = _shebang_end(text)
+    while True:
+        token = _SCALA_TOKEN.search(text, index)
+        if token is None:
+            return None if forms else kinds
+        start, value = token.start(), token.group()
+        end: int | None = token.end()
+        rest: tuple[int, bool] | None = None
+        multiline = value.endswith('"""')
+        if value == "//":
+            end = _line_end(text, start, _CR_LF)
+            _mark(kinds, start, end, _COMMENT)
+        elif value == "/*":
+            end = _nested_block_end(text, start + 2)
+            if end is None:
+                return None
+            _mark(kinds, start, end, _COMMENT)
+        elif value == '"""':
+            close = text.find('"""', token.end())
+            if close < 0:
+                return None
+            end = close + 3
+            while text.startswith('"', end):
+                end += 1
+            _mark(kinds, start, end, _STRING)
+        elif value == '"':
+            literal = _SCALA_STRING.match(text, start)
+            if literal is None:
+                return None
+            end = literal.end()
+            _mark(kinds, start, end, _STRING)
+        elif value.endswith('"'):
+            quote = token.end() - (3 if multiline else 1)
+            rest = _scala_interpolation_rest(text, kinds, quote, token.end(), multiline)
+            if rest is None:
+                return None
+        elif value == "'":
+            char = _SCALA_CHAR.match(text, start)
+            if char is not None:
+                end = char.end()
+                _mark(kinds, start, end, _STRING)
+            # Otherwise a symbol literal or a quote: code.
+        elif value == "`":
+            name = _SCALA_BACKTICK.match(text, start)
+            if name is None:
+                return None
+            end = name.end()
+        elif value == "<":
+            previous = text[start - 1] if start else " "
+            if (previous.isspace() or previous in "({") and _SCALA_XML_NAME.match(
+                text, start + 1
+            ):
+                return None
+        elif value == "{":
+            if depths:
+                depths[-1] += 1
+        elif depths and depths[-1]:  # "}"
+            depths[-1] -= 1
+        elif depths:
+            depths.pop()
+            multiline = forms.pop()
+            rest = _scala_interpolation_rest(
+                text, kinds, start + 1, start + 1, multiline
+            )
+            if rest is None:
+                return None
+        if rest is not None:
+            end, opened = rest
+            if opened:
+                forms.append(multiline)
+                depths.append(0)
+        assert end is not None
+        index = end
+
+
+# Groovy (and Gradle build scripts): flat block comments; ``'...'`` and
+# ``'''...'''`` strings; ``"..."`` and ``"""..."""`` GStrings whose ``${...}``
+# fields are code. A ``/`` begins a slashy string, which may span lines,
+# wherever the lexer allows a regular expression, so a slash is only taken as
+# division straight after an operand (a name that is not a keyword, a number,
+# a closing bracket or quote); any other slash, a dollar-slashy ``$/``, or a
+# Unicode escape (translated before lexing) leaves the file unmasked.
+_GROOVY_TOKEN = re.compile(r"//|/\*|'''|\"\"\"|\$/|['\"/{}]")
+_GROOVY_STRING = {
+    "'": re.compile(r"'(?:[^'\\\r\n]|\\[\s\S])*'"),
+    "'''": re.compile(r"'''(?:[^'\\]|\\[\s\S]|'(?!''))*'''"),
+}
+_GROOVY_TEMPLATES = {
+    '"': _Template('"', escapes=True, multiline=False),
+    '"""': _Template('"""', escapes=True, multiline=True),
+}
+_GROOVY_KEYWORDS = frozenset(
+    [
+        "as",
+        "assert",
+        "break",
+        "case",
+        "catch",
+        "class",
+        "const",
+        "continue",
+        "def",
+        "default",
+        "do",
+        "else",
+        "enum",
+        "extends",
+        "false",
+        "final",
+        "finally",
+        "for",
+        "goto",
+        "if",
+        "implements",
+        "import",
+        "in",
+        "instanceof",
+        "interface",
+        "native",
+        "new",
+        "non-sealed",
+        "null",
+        "package",
+        "permits",
+        "private",
+        "protected",
+        "public",
+        "record",
+        "return",
+        "sealed",
+        "static",
+        "strictfp",
+        "super",
+        "switch",
+        "synchronized",
+        "this",
+        "threadsafe",
+        "throw",
+        "throws",
+        "trait",
+        "transient",
+        "true",
+        "try",
+        "var",
+        "void",
+        "volatile",
+        "while",
+        "yield",
+    ]
+)
+
+
+def _groovy_divides(text: str, start: int) -> bool:
+    """Whether the ``/`` at ``start`` is division rather than a slashy string."""
+    cursor = start - 1
+    while cursor >= 0 and text[cursor] in " \t":
+        cursor -= 1
+    if cursor < 0:
+        return False
+    previous = text[cursor]
+    if previous in ")]}'\"":
+        return True
+    if not (previous.isalnum() or previous in "_$"):
+        return False
+    word_start = cursor
+    while word_start > 0 and (
+        text[word_start - 1].isalnum() or text[word_start - 1] in "_$"
+    ):
+        word_start -= 1
+    return text[word_start : cursor + 1] not in _GROOVY_KEYWORDS
+
+
+def _groovy_literal(text: str, kinds: bytearray, start: int, value: str) -> int | None:
+    if value == "/":
+        return start + 1 if _groovy_divides(text, start) else None
+    if value == "$/":
+        return None
+    literal = _GROOVY_STRING[value].match(text, start)
+    if literal is None:
+        return None
+    _mark(kinds, start, literal.end(), _STRING)
+    return literal.end()
+
+
+def _lex_groovy(text: str) -> bytearray | None:
+    """Groovy: comments, quoted strings, GStrings; slashy strings unmasked."""
+    if _JAVA_UNICODE_ESCAPE.search(text):
+        return None
+    return _lex_templated(
+        text, _GROOVY_TOKEN, _GROOVY_TEMPLATES, _groovy_literal, nested=False
+    )
+
+
+# F#: ``//`` and nested ``(* *)`` comments, whose text is lexed for strings
+# and char literals so a ``"*)"`` inside does not end them; ``(*)`` is the
+# multiplication operator. Strings may span lines: regular (escapes),
+# verbatim ``@"..."`` (``""``), triple ``"""..."""``, and interpolated forms
+# whose ``{...}`` fields are bounded only when they hold no literal, comment,
+# or brace. A ``'`` after a name char is part of the name (``x'``), and one
+# that opens no char literal starts a type variable (``'T``). Left unmasked:
+# ``#if`` sections (the compiler skips inactive lines unlexed), ``$$``
+# interpolation, and OCaml-compatible ``(*IF-FSHARP``/``(*F#`` comments, whose
+# text F# compiles as code.
+_FS_UNSUPPORTED = re.compile(
+    r"^[ \t]*#(?:if|elif|else|endif)\b|\(\*(?:IF-|F#)|ENDIF-|\$\$", re.M
+)
+_FS_TOKEN = re.compile(r'//|\(\*|\$@"|@\$"|\$"""|\$"|@"|"""|"|``|\'')
+_FS_STRING = {
+    '"': re.compile(r'"(?:[^"\\]|\\[\s\S])*"'),
+    '@"': re.compile(r'@"(?:[^"]|"")*"'),
+    '"""': re.compile(r'"""[\s\S]*?"""'),
+}
+_FS_CHAR = re.compile(
+    r"'(?:[^'\\\r\n]|\\(?:[ntbrafv\\\"'0]|[0-9]{3}|x[0-9A-Fa-f]{2}"
+    r"|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}))'"
+)
+_FS_BACKTICK = re.compile(r"``(?:[^`\r\n]|`(?!`))+``")
+_FS_COMMENT_STOP = re.compile(r'\(\*\)|\(\*|\*\)|"""|@"|"|\'')
+_FS_INTERPOLATED_STOP = {
+    '$"': re.compile(r'\\[\s\S]|\{\{|\}\}|[{}"]'),
+    '$@"': re.compile(r'""|\{\{|\}\}|[{}"]'),
+    '@$"': re.compile(r'""|\{\{|\}\}|[{}"]'),
+    '$"""': re.compile(r'\{\{|\}\}|[{}]|"""'),
+}
+_FS_FIELD = re.compile(r"(?:[^\"'@$/\\{}(]|\((?!\*))*\}")
+
+
+def _fsharp_comment_end(text: str, start: int) -> int | None:
+    """End of the ``(*`` comment whose opener ends at ``start``."""
+    depth = 1
+    index = start
+    while (stop := _FS_COMMENT_STOP.search(text, index)) is not None:
+        value = stop.group()
+        index = stop.end()
+        if value == "(*)":
+            continue
+        if value == "(*":
+            depth += 1
+        elif value == "*)":
+            depth -= 1
+            if not depth:
+                return index
+        elif value == "'":
+            char = _FS_CHAR.match(text, stop.start())
+            if char is not None:
+                index = char.end()
+        else:
+            literal = _FS_STRING[value].match(text, stop.start())
+            if literal is None:
+                return None
+            index = literal.end()
+    return None
+
+
+def _fsharp_interpolated(text: str, index: int, opener: str) -> int | None:
+    stop_pattern = _FS_INTERPOLATED_STOP[opener]
+    while (stop := stop_pattern.search(text, index)) is not None:
+        value = stop.group()
+        if value in {'"', '"""'}:
+            return stop.end()
+        if value == "{":
+            field = _FS_FIELD.match(text, stop.end())
+            if field is None:
+                return None
+            index = field.end()
+        elif value == "}":
+            return None
+        else:
+            index = stop.end()
+    return None
+
+
+def _lex_fsharp(text: str) -> bytearray | None:
+    """F#: nested comments, regular, verbatim, triple and interpolated strings."""
+    if _FS_UNSUPPORTED.search(text):
+        return None
+    kinds = bytearray(len(text))
+    index = _shebang_end(text)
+    while (token := _FS_TOKEN.search(text, index)) is not None:
+        start, value = token.start(), token.group()
+        end: int | None = token.end()
+        if value == "//":
+            end = _line_end(text, start, _CR_LF)
+            _mark(kinds, start, end, _COMMENT)
+        elif value == "(*":
+            end = start + 3
+            if not text.startswith(")", start + 2):
+                end = _fsharp_comment_end(text, start + 2)
+                if end is None:
+                    return None
+                _mark(kinds, start, end, _COMMENT)
+        elif value == "``":
+            name = _FS_BACKTICK.match(text, start)
+            if name is None:
+                return None
+            end = name.end()
+        elif value == "'":
+            previous = text[start - 1] if start else " "
+            if not (previous.isalnum() or previous in "_'"):
+                char = _FS_CHAR.match(text, start)
+                if char is not None:
+                    end = char.end()
+                    _mark(kinds, start, end, _STRING)
+        else:
+            if value.startswith(("$", "@$")):
+                end = _fsharp_interpolated(text, token.end(), value)
+            else:
+                literal = _FS_STRING[value].match(text, start)
+                end = None if literal is None else literal.end()
+            if end is None:
+                return None
+            _mark(kinds, start, end, _STRING)
+        assert end is not None
+        index = end
+    return kinds
+
+
 # --- Python -------------------------------------------------------------------
 
 _PY_NEWLINE = re.compile(r"\r\n|\r|\n")
@@ -2194,6 +2578,9 @@ _COMMENT_FAMILIES = {
     "dart": _SLASH,
     "zig": _SLASH,
     "swift": _SLASH,
+    "scala": _SLASH,
+    "groovy": _SLASH,
+    "fsharp": _CommentFamily(("//",), ("(*", "*)")),
     "php": _CommentFamily(("//", "#"), ("/*", "*/"), not_line=("#[",)),
     "python": _HASH,
     "shell": _HASH,
@@ -2209,8 +2596,6 @@ _COMMENT_FAMILIES = {
 # suffix and build file the screener treats as runtime surface, and languages
 # that may sit under ``src/``.
 _UNLEXED_FAMILY_BY_NAME = {
-    "build.gradle": _SLASH,
-    "settings.gradle": _SLASH,
     "deno.json": _SLASH,
     "deno.jsonc": _SLASH,
     "cmakelists.txt": _HASH,
@@ -2219,14 +2604,7 @@ _UNLEXED_FAMILY_BY_NAME = {
     "pom.xml": _CommentFamily((), ("<!--", "-->")),
 }
 _UNLEXED_FAMILY_BY_SUFFIX = {
-    ".scala": _SLASH,
-    ".sc": _SLASH,
-    ".groovy": _SLASH,
-    ".gradle": _SLASH,
     ".m": _SLASH,
-    ".mm": _SLASH,
-    ".fs": _CommentFamily(("//",), ("(*", "*)")),
-    ".fsx": _CommentFamily(("//",), ("(*", "*)")),
     ".rb": _HASH_INTERPOLATING,
     ".rake": _HASH_INTERPOLATING,
     ".gemspec": _HASH_INTERPOLATING,
@@ -2318,6 +2696,9 @@ _LEXERS: dict[str, Callable[[str], bytearray | None]] = {
     "php": _lex_php,
     "zig": _lex_zig,
     "swift": _lex_swift,
+    "scala": _lex_scala,
+    "groovy": _lex_groovy,
+    "fsharp": _lex_fsharp,
     "python": _lex_python,
     "shell": _lex_shell,
     "dockerfile": _lex_dockerfile,
