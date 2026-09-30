@@ -17,6 +17,7 @@ import shlex
 import subprocess
 import sys
 import tarfile
+from collections.abc import Iterable
 from pathlib import Path
 
 import pytest
@@ -148,6 +149,32 @@ def _copied(path: Path, sources: list[str]) -> bool:
     )
 
 
+def _same_manifests(loaded: Iterable[Path | str], expected: list[Path]) -> bool:
+    """Compare manifest sets, never orders.
+
+    Runtime loaders sort their glob by name, so v10 lands before v3, while
+    ``manifests_in`` sorts by version number. Trust is the union of the set.
+    """
+    paths = [Path(path).resolve() for path in loaded]
+    return len(paths) == len(set(paths)) and set(paths) == {
+        path.resolve() for path in expected
+    }
+
+
+def test_manifest_sets_compare_across_name_and_version_order(tmp_path: Path) -> None:
+    for number in (1, 3, 9, 10):
+        (tmp_path / f"starter-kit-provenance-v{number}.json").write_text("{}")
+    by_name = sorted(tmp_path.glob("starter-kit-provenance-*.json"))
+    by_version = manifests_in(tmp_path)
+
+    # The orders really differ once a version reaches two digits, and the
+    # comparison still holds.
+    assert by_name != by_version
+    assert _same_manifests(by_name, by_version)
+    assert not _same_manifests(by_name[:-1], by_version)
+    assert not _same_manifests([*by_name, by_name[0]], by_version)
+
+
 def test_no_runtime_loader_or_image_sees_a_staged_manifest(tmp_path: Path) -> None:
     runtime = manifests_in(RUNTIME_MANIFESTS)
     staged = manifests_in(STAGED_MANIFESTS)
@@ -159,7 +186,7 @@ def test_no_runtime_loader_or_image_sees_a_staged_manifest(tmp_path: Path) -> No
 
     # L2's starter revisions, the L1 provenance block and the static
     # preflight's default trust set, and the in-process analyzer.
-    assert list(L2_STARTER_MANIFESTS) == runtime
+    assert _same_manifests(L2_STARTER_MANIFESTS, runtime)
     key = tmp_path / "key"
     key.write_text("unused")
     agent = OpenRouterSourceReviewAgent(
@@ -169,7 +196,7 @@ def test_no_runtime_loader_or_image_sees_a_staged_manifest(tmp_path: Path) -> No
         timeout_seconds=1,
         max_steps=1,
     )
-    assert agent._provenance_manifest_files == tuple(str(path) for path in runtime)
+    assert _same_manifests(agent._provenance_manifest_files, runtime)
     assert (
         InProcessAnalyzerHarness()._manifests.resolve() == RUNTIME_MANIFESTS.resolve()
     )
@@ -180,12 +207,17 @@ def test_no_runtime_loader_or_image_sees_a_staged_manifest(tmp_path: Path) -> No
         SCREENER_ROOT / "deploy" / "l2-analyzer.Dockerfile", SCREENER_ROOT
     )
     screener = _copied_sources(SCREENER_ROOT / "Dockerfile", REPOSITORY_ROOT)
-    assert [
-        path
-        for path in sorted(RUNTIME_MANIFESTS.iterdir())
-        if path.suffix == ".json" and _copied(path, analyzer)
-    ] == runtime
-    for path in (*staged, STAGED_MANIFESTS / "starter-kit-provenance-v999.json"):
+    assert _same_manifests(
+        (
+            path
+            for path in RUNTIME_MANIFESTS.iterdir()
+            if path.suffix == ".json" and _copied(path, analyzer)
+        ),
+        runtime,
+    )
+    # A two-digit activated version is baked too; a staged one never is.
+    assert _copied(RUNTIME_MANIFESTS / "starter-kit-provenance-v10.json", analyzer)
+    for path in (*staged, STAGED_MANIFESTS / "starter-kit-provenance-v10.json"):
         assert not _copied(path, analyzer), path
         assert not _copied(path, screener), path
 
