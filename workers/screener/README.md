@@ -273,8 +273,11 @@ Required values are supplied through the production host's protected
 
 Static preflight v2 makes a source match decisive only when both its effective
 Docker/Cargo/runtime reachability and its category-specific source-to-sink flow
-are proven. Excluded or test-only code is inert. Dynamic and unsupported build
-or import forms remain advisory source-review leads. Roll out `shadow` first,
+are proven. Code excluded from the effective build is inert. Test-only code
+never makes a v2 match decisive, but the v1 detector scans it, including files
+reached only through `cfg(test)`-gated `include!` or `#[path]`, because no build
+flag can be proven off; a test-only match keeps its pre-build lead. Dynamic and
+unsupported build or import forms remain advisory source-review leads. Roll out `shadow` first,
 inspect only the sanitized private journal, and promote to `enforce` explicitly.
 
 Static source matches remain pre-execution leads. In `shadow`/`enforce`, the

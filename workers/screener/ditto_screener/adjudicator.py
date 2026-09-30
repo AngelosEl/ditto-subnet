@@ -1712,7 +1712,10 @@ class SourceReviewAdjudicator:
                     policy_version=policy_version,
                 )
             if citation_admissibility(
-                normalized, repository.member_text(normalized), line
+                normalized,
+                repository.member_text(normalized),
+                line,
+                runtime_paths=repository.runtime_paths,
             ).admissible:
                 admissible.append(SourceReviewCitation(path=normalized, line=line))
         if not admissible:

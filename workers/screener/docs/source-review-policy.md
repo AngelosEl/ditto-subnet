@@ -606,17 +606,45 @@ bypass. Medium/high findings require evidence for every category. Benchmark
 emulation and scorer-contract manipulation require at least two distinct,
 validated source locations covering the trigger and effect. Location-only
 review leads in the initial inventory are search prompts, not findings; the
-reviewer must prove they are reachable before citing them. The following are
-insufficient on their own:
+reviewer must prove they are reachable before citing them.
+
+The bounded rule leads and emulation fingerprints cover only miner-authored
+bytes. A file whose exact path and sha256 appear in a runtime starter manifest
+(`ditto_screener/data/`) is left out of both scans and counted in
+`trusted_starter_skipped`; a staged manifest grants nothing, and one changed
+byte keeps all of a file's leads. Reachability, static-v2 advisories, category
+guards, generator mirroring, and review-adaptation analysis still read every
+file. Executable and build files fill the lead cap before docs and data
+fixtures, which keep their leads in whatever capacity remains. Test-named
+modules count as executable source, and apart from the two keep-preference
+fingerprints that already skip them, fingerprints still scan Rust test-only
+items. The decisive pre-build preflight also scans Rust test-only items and
+follows `cfg(test)`-gated `include!` and `#[path]` targets. Source text cannot
+prove any of these unserved: a runtime-loaded path, a base image, or a computed
+build value (`rustc --cfg test`, RUSTFLAGS from an ARG) can serve them without
+any text the archive shows.
+
+Leads, fingerprints, category guards, and the decisive preflight match roles
+outside comments, read by each file's language. Where no lexer covers the language (Ruby, Lua, and the like) or the lexer
+leaves the file unmasked, leads, fingerprints, and category guards skip whole
+comment lines by that language's markers instead. That can also skip a line
+of a multi-line string, so it is used only where a miss costs a lead. The
+decisive preflight never guesses: where a lexer cannot finish a file, it
+still masks the comments in the longest prefix the lexer proves, and reads
+the rest, and any file no lexer covers, whole. Citation admissibility and
+static proofs likewise read an unlexed file whole.
+
+The following are insufficient on their own:
 
 - tuned parameters or multiple candidate profiles;
 - generic answer-slot parsing;
 - generic lexical retrieval of user-owned values;
 - benchmark words in prose, comments, tests, or filenames;
 - a citation to a line that cannot execute. Evidence names the trigger and the
-  effect of a causal path, so a blank line, a comment, an import or module
-  declaration, a non-`cfg` attribute, or a lone closing delimiter is not admissible evidence and is dropped
-  before the finding is digest-bound. `#[cfg(...)]`/`#[cfg_attr(...)]` lines
+  effect of a causal path, so a blank line, a comment (by the cited file's own
+  language), a lone closing delimiter, or, in Rust, a `use`/`mod`
+  declaration or a non-`cfg` attribute is not admissible evidence and is
+  dropped before the finding is digest-bound. `#[cfg(...)]`/`#[cfg_attr(...)]` lines
   remain admissible because a reachability gate can genuinely be the trigger,
   and a line that carries both a signature and a body, or a statement with a
   trailing comment, is executable source. Dropping a citation is not a
