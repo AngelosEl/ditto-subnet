@@ -84,6 +84,12 @@ _LANGUAGE_BY_SUFFIX = {
     ".mts": "typescript",
     ".cts": "typescript",
     ".tsx": "typescript",
+    ".java": "java",
+    ".kt": "kotlin",
+    ".kts": "kotlin",
+    ".cs": "csharp",
+    ".dart": "dart",
+    ".php": "php",
     ".py": "python",
     ".pyi": "python",
     ".pyw": "python",
@@ -116,13 +122,18 @@ _LANGUAGE_BY_NAME = {
 # Only these languages have string literals that are inert data. In shell,
 # Dockerfile, and configuration formats a quoted word is routinely the command
 # itself (``sh -c '...'``, ``"$(cat ...)"``, a ``[tool.*]`` script), so
-# blanking it would erase the effect a scanner is looking for.
+# blanking it would erase the effect a scanner is looking for. Java, Kotlin,
+# C#, Dart, and PHP are masked for comments only: their strings are often the
+# command too (``shell_exec('...')``, ``Runtime.exec("...")``), and the
+# preflight's process-execution exception does not name those APIs.
 _STRING_MASKED_LANGUAGES = frozenset(
     {"rust", "go", "c", "javascript", "typescript", "python"}
 )
 # The kernel executes a script's ``#!`` line (``env -S`` accepts a whole
 # command), so it is never masked as a comment.
-_SHEBANG_LANGUAGES = frozenset({"python", "shell", "javascript", "typescript"})
+_SHEBANG_LANGUAGES = frozenset(
+    {"python", "shell", "javascript", "typescript", "kotlin", "csharp", "dart", "php"}
+)
 
 
 def language_for_path(path: str) -> str | None:
@@ -719,6 +730,418 @@ def _js_member_dot(code: str) -> bool | None:
 
 def _js_word_char(char: str) -> bool:
     return char.isalnum() or char in "_$"
+
+
+# --- Java, Kotlin, C#, Dart, PHP -----------------------------------------------
+#
+# Each lexer bounds exactly the literal forms its compiler accepts and returns
+# None for anything else: a form it does not bound (a C# raw string, a PHP
+# here-document), a construct that moves where a comment ends (a Java Unicode
+# escape, PHP ``?>``), or source the compiler rejects. A line comment ends at
+# the first line break any reading of the file could give it, so it never runs
+# over a line the compiler starts afresh.
+
+
+def _shebang_end(text: str) -> int:
+    """Offset after a leading ``#!`` interpreter line, else 0."""
+    return _line_end(text, 0, _CR_LF) if text.startswith("#!") else 0
+
+
+def _block_comment_end(text: str, start: int, *, nested: bool) -> int | None:
+    """End of the block comment whose ``/*`` ends at ``start``, or None."""
+    if nested:
+        return _nested_block_end(text, start)
+    close = text.find("*/", start)
+    return None if close < 0 else close + 2
+
+
+class _Template:
+    """A string form whose ``${...}`` fields are code (Kotlin, Dart).
+
+    ``stop`` finds the next escape, field, closing quote, or (for a one-line
+    form) line break. ``run`` closes on a run of three or more quotes, the
+    extras being content, as a Kotlin raw string does.
+    """
+
+    __slots__ = ("quote", "run", "stop")
+
+    def __init__(
+        self, quote: str, *, escapes: bool, multiline: bool, run: bool = False
+    ) -> None:
+        stop = [r"\\[\s\S]" if multiline else r"\\[^\r\n]"] if escapes else []
+        stop += [r"\$\{", re.escape(quote)]
+        if not multiline:
+            stop.append(r"[\r\n]")
+        self.stop = re.compile("|".join(stop))
+        self.quote = quote
+        self.run = run
+
+
+def _template_rest(
+    text: str, kinds: bytearray, mark_from: int, scan_from: int, form: _Template
+) -> tuple[int, bool] | None:
+    """Mark string text up to its close or its next field.
+
+    Returns (resume offset, whether a ``${`` field opened), or None when the
+    string meets a line end it may not span, or the end of the file.
+    """
+    index = scan_from
+    while (stop := form.stop.search(text, index)) is not None:
+        value = stop.group()
+        if value.startswith("\\"):
+            index = stop.end()
+            continue
+        if value == "${":
+            _mark(kinds, mark_from, stop.start(), _STRING)
+            return stop.end(), True
+        if value != form.quote:
+            return None
+        end = stop.end()
+        if form.run:
+            while text.startswith(form.quote[0], end):
+                end += 1
+        _mark(kinds, mark_from, end, _STRING)
+        return end, False
+    return None
+
+
+# Marks the literal opened by ``value`` at ``start`` and returns its end.
+_LiteralLexer = Callable[[str, bytearray, int, str], int | None]
+
+
+def _lex_templated(
+    text: str,
+    tokens: re.Pattern[str],
+    templates: dict[str, _Template],
+    literal: _LiteralLexer,
+    *,
+    nested: bool,
+) -> bytearray | None:
+    """Comments, strings, and ``${...}`` fields for Kotlin and Dart.
+
+    ``tokens`` finds ``//``, ``/*``, ``{``, ``}``, and every literal opener.
+    An opener in ``templates`` starts a string with code fields; ``literal``
+    bounds any other. A field's closing ``}`` resumes the string it
+    interrupted, so a quote or comment inside a field is lexed as code.
+    """
+    kinds = bytearray(len(text))
+    # For each open field: the string it resumes, and the braces opened in it.
+    forms: list[_Template] = []
+    depths: list[int] = []
+    index = _shebang_end(text)
+    while True:
+        token = tokens.search(text, index)
+        if token is None:
+            return None if forms else kinds
+        start, value = token.start(), token.group()
+        end: int | None = token.end()
+        rest: tuple[int, bool] | None = None
+        if value == "//":
+            end = _line_end(text, start, _CR_LF)
+            _mark(kinds, start, end, _COMMENT)
+        elif value == "/*":
+            end = _block_comment_end(text, start + 2, nested=nested)
+            if end is None:
+                return None
+            _mark(kinds, start, end, _COMMENT)
+        elif value == "{":
+            if depths:
+                depths[-1] += 1
+        elif value == "}":
+            if depths and depths[-1]:
+                depths[-1] -= 1
+            elif depths:
+                depths.pop()
+                form = forms.pop()
+                rest = _template_rest(text, kinds, start + 1, start + 1, form)
+                if rest is None:
+                    return None
+        elif value in templates:
+            form = templates[value]
+            rest = _template_rest(text, kinds, start, token.end(), form)
+            if rest is None:
+                return None
+        else:
+            end = literal(text, kinds, start, value)
+            if end is None:
+                return None
+        if rest is not None:
+            end, opened = rest
+            if opened:
+                forms.append(form)
+                depths.append(0)
+        assert end is not None
+        index = end
+
+
+# A backslash starts a Unicode escape, which Java translates before it lexes
+# anything (``\u000a`` ends a ``//`` comment), when an even number of
+# backslashes precedes it (JLS 3.3).
+_JAVA_UNICODE_ESCAPE = re.compile(r"(?<!\\)(?:\\\\)*\\u")
+_JAVA_TOKEN = re.compile(r"//|/\*|\"\"\"|[\"']")
+# ``\{`` opens an embedded expression in a (preview) string template.
+_JAVA_STRING = re.compile(r"\"(?:[^\"\\\r\n]|\\[^\r\n{])*\"")
+_JAVA_CHAR = re.compile(r"'(?:[^'\\\r\n]|\\(?:[btnfrs\"'\\]|[0-7]{1,3}))'")
+_JAVA_TEXT_BLOCK_OPEN = re.compile(r"[ \t\f]*(?:\r\n|\r|\n)")
+_JAVA_TEXT_BLOCK_STOP = re.compile(r"\\[\s\S]|\"\"\"")
+
+
+def _lex_java(text: str) -> bytearray | None:
+    """Java: strings, text blocks, char literals, flat block comments.
+
+    A file with a Unicode escape is left unmasked: Java translates escapes
+    first, so one can end a comment or a literal early.
+    """
+    if _JAVA_UNICODE_ESCAPE.search(text):
+        return None
+    kinds = bytearray(len(text))
+    index = 0
+    while (token := _JAVA_TOKEN.search(text, index)) is not None:
+        start, value = token.start(), token.group()
+        end: int | None
+        if value == "//":
+            end = _line_end(text, start, _CR_LF)
+            _mark(kinds, start, end, _COMMENT)
+        elif value == "/*":
+            end = _block_comment_end(text, start + 2, nested=False)
+            if end is None:
+                return None
+            _mark(kinds, start, end, _COMMENT)
+        else:
+            if value == '"""':
+                end = _java_text_block_end(text, token.end())
+            else:
+                pattern = _JAVA_STRING if value == '"' else _JAVA_CHAR
+                literal = pattern.match(text, start)
+                end = None if literal is None else literal.end()
+            if end is None:
+                return None
+            _mark(kinds, start, end, _STRING)
+        index = end
+    return kinds
+
+
+def _java_text_block_end(text: str, start: int) -> int | None:
+    # The opening delimiter must end its line (JLS 3.10.6).
+    if _JAVA_TEXT_BLOCK_OPEN.match(text, start) is None:
+        return None
+    index = start
+    while (stop := _JAVA_TEXT_BLOCK_STOP.search(text, index)) is not None:
+        if stop.group() == '"""':
+            return stop.end()
+        if stop.group() == "\\{":
+            return None
+        index = stop.end()
+    return None
+
+
+_KOTLIN_TOKEN = re.compile(r"//|/\*|\"\"\"|[\"'`{}]")
+_KOTLIN_TEMPLATES = {
+    '"': _Template('"', escapes=True, multiline=False),
+    '"""': _Template('"""', escapes=False, multiline=True, run=True),
+}
+_KOTLIN_CHAR = re.compile(r"'(?:[^'\\\r\n]|\\(?:[tbnr'\"\\$]|u[0-9A-Fa-f]{4}))'")
+_KOTLIN_BACKTICK = re.compile(r"`[^`\r\n]+`")
+
+
+def _kotlin_literal(text: str, kinds: bytearray, start: int, value: str) -> int | None:
+    if value == "`":
+        # A backtick name is code, but may hold ``//`` or a quote.
+        name = _KOTLIN_BACKTICK.match(text, start)
+        return None if name is None else name.end()
+    char = _KOTLIN_CHAR.match(text, start)
+    if char is None:
+        return None
+    _mark(kinds, start, char.end(), _STRING)
+    return char.end()
+
+
+def _lex_kotlin(text: str) -> bytearray | None:
+    """Kotlin: nested block comments, raw strings, ``${...}`` templates."""
+    return _lex_templated(
+        text, _KOTLIN_TOKEN, _KOTLIN_TEMPLATES, _kotlin_literal, nested=True
+    )
+
+
+_DART_TOKEN = re.compile(r"//|/\*|(?<![\w$])r(?:'''|\"\"\"|['\"])|'''|\"\"\"|['\"{}]")
+_DART_TEMPLATES = {
+    quote: _Template(quote, escapes=True, multiline=len(quote) == 3)
+    for quote in ("'", '"', "'''", '"""')
+}
+_DART_RAW = {
+    "r'": re.compile(r"r'[^'\r\n]*'"),
+    'r"': re.compile(r"r\"[^\"\r\n]*\""),
+    "r'''": re.compile(r"r'''[\s\S]*?'''"),
+    'r"""': re.compile(r"r\"\"\"[\s\S]*?\"\"\""),
+}
+
+
+def _dart_literal(text: str, kinds: bytearray, start: int, value: str) -> int | None:
+    raw = _DART_RAW[value].match(text, start)
+    if raw is None:
+        return None
+    _mark(kinds, start, raw.end(), _STRING)
+    return raw.end()
+
+
+def _lex_dart(text: str) -> bytearray | None:
+    """Dart: nested block comments, raw and multi-line strings, templates."""
+    return _lex_templated(
+        text, _DART_TOKEN, _DART_TEMPLATES, _dart_literal, nested=True
+    )
+
+
+# C# line breaks, which end a ``//`` comment and may not sit in a string.
+_CS_BREAKS = "\r\n\x85\u2028\u2029"
+_CS_BREAK = re.compile(f"[{_CS_BREAKS}]")
+# Raw strings, and conditional sections (whose skipped lines the compiler does
+# not lex, so a ``/*`` there opens nothing), are not bounded here.
+_CS_UNSUPPORTED = re.compile(r"\"\"\"|#[ \t]*(?:if|elif|else|endif)\b")
+_CS_TOKEN = re.compile(r"//|/\*|\$@\"|@\$\"|\$\"|@\"|[\"'#]")
+# These directives take the rest of their line as a message, not code.
+_CS_MESSAGE_DIRECTIVE = re.compile(r"#[ \t]*(?:region|endregion|error|warning)\b")
+_CS_STRING = re.compile(rf"\"(?:[^\"\\{_CS_BREAKS}]|\\[^{_CS_BREAKS}])*\"")
+_CS_VERBATIM = re.compile(r"@\"(?:[^\"]|\"\")*\"")
+_CS_CHAR = re.compile(
+    rf"'(?:[^'\\{_CS_BREAKS}]|\\(?:x[0-9A-Fa-f]{{1,4}}|u[0-9A-Fa-f]{{4}}"
+    rf"|U[0-9A-Fa-f]{{8}}|['\"\\0abefnrtv]))'"
+)
+_CS_INTERPOLATED_STOP = re.compile(
+    rf"\\[^{_CS_BREAKS}]|\{{\{{|\}}\}}|[{{}}\"{_CS_BREAKS}]"
+)
+_CS_VERBATIM_INTERPOLATED_STOP = re.compile(r"\"\"|\{\{|\}\}|[{}\"]")
+# An interpolation field is bounded only when it holds no literal, comment,
+# brace, or line break: names, operators, and a format such as ``:N2``.
+_CS_FIELD = re.compile(rf"[^\"'@$/\\{{}}{_CS_BREAKS}]*\}}")
+
+
+def _lex_csharp(text: str) -> bytearray | None:
+    """C#: regular, verbatim, and interpolated strings; char literals."""
+    if _CS_UNSUPPORTED.search(text):
+        return None
+    kinds = bytearray(len(text))
+    index = _shebang_end(text)
+    while (token := _CS_TOKEN.search(text, index)) is not None:
+        start, value = token.start(), token.group()
+        end: int | None
+        if value == "//":
+            end = _line_end(text, start, _CS_BREAK)
+            _mark(kinds, start, end, _COMMENT)
+        elif value == "/*":
+            end = _block_comment_end(text, start + 2, nested=False)
+            if end is None:
+                return None
+            _mark(kinds, start, end, _COMMENT)
+        elif value == "#":
+            end = token.end()
+            if _csharp_line_start(text, start) and _CS_MESSAGE_DIRECTIVE.match(
+                text, start
+            ):
+                end = _line_end(text, start, _CS_BREAK)
+        elif value.endswith('"') and "$" in value:
+            stop = (
+                _CS_INTERPOLATED_STOP
+                if value == '$"'
+                else _CS_VERBATIM_INTERPOLATED_STOP
+            )
+            end = _csharp_interpolated(text, kinds, start, token.end(), stop)
+        else:
+            pattern = {'"': _CS_STRING, '@"': _CS_VERBATIM, "'": _CS_CHAR}[value]
+            literal = pattern.match(text, start)
+            end = None if literal is None else literal.end()
+            if end is not None:
+                _mark(kinds, start, end, _STRING)
+        if end is None:
+            return None
+        index = end
+    return kinds
+
+
+def _csharp_line_start(text: str, index: int) -> bool:
+    """Whether only blanks precede ``index`` on its line (a directive may start)."""
+    while index and text[index - 1] not in _CS_BREAKS and text[index - 1].isspace():
+        index -= 1
+    return not index or text[index - 1] in _CS_BREAKS
+
+
+def _csharp_interpolated(
+    text: str, kinds: bytearray, start: int, index: int, stop_pattern: re.Pattern[str]
+) -> int | None:
+    fields: list[tuple[int, int]] = []
+    while (stop := stop_pattern.search(text, index)) is not None:
+        value = stop.group()
+        if value == '"':
+            _mark(kinds, start, stop.end(), _STRING)
+            for field_start, field_end in fields:
+                _mark(kinds, field_start, field_end, _CODE)
+            return stop.end()
+        if value == "{":
+            field = _CS_FIELD.match(text, stop.end())
+            if field is None:
+                return None
+            fields.append((stop.end(), field.end() - 1))
+            index = field.end()
+        elif len(value) == 1 and value in "}" + _CS_BREAKS:
+            # A lone ``}`` is an error; a line break may not sit in a
+            # regular interpolated string.
+            return None
+        else:
+            index = stop.end()
+    return None
+
+
+# The file must be PHP from its first byte (after an interpreter line):
+# markup before ``<?php`` is output, and ``?>`` ends PHP code even inside a
+# ``//`` or ``#`` comment, so only a final ``?>`` with nothing after it is
+# accepted. Here-documents, and data after ``__halt_compiler`` (which a script
+# may read back and run), are not bounded.
+_PHP_OPEN = re.compile(r"(?:#![^\r\n]*(?:\r\n|\r|\n))?<\?php(?=[ \t\r\n])", re.I)
+_PHP_UNSUPPORTED = re.compile(r"<<<|__halt_compiler", re.I)
+# ``#[`` opens a PHP 8 attribute, not a comment.
+_PHP_TOKEN = re.compile(r"//|#(?!\[)|/\*|['\"`]")
+_PHP_QUOTED = {
+    quote: re.compile(rf"{quote}(?:[^{quote}\\]|\\[\s\S])*{quote}")
+    for quote in ("'", '"', "`")
+}
+# ``{$...}`` and ``${...}`` embed expressions that may hold quotes.
+_PHP_COMPLEX_FIELD = re.compile(r"\{\$|\$\{")
+
+
+def _lex_php(text: str) -> bytearray | None:
+    """PHP: ``//``, ``#``, and block comments; quoted and backtick strings."""
+    opening = _PHP_OPEN.match(text)
+    if opening is None or _PHP_UNSUPPORTED.search(text):
+        return None
+    limit = text.find("?>")
+    if limit < 0:
+        limit = len(text)
+    elif text[limit + 2 :].strip(" \t\r\n"):
+        return None
+    kinds = bytearray(len(text))
+    index = opening.end()
+    while (token := _PHP_TOKEN.search(text, index, limit)) is not None:
+        start, value = token.start(), token.group()
+        end: int | None
+        if value in {"//", "#"}:
+            end = min(_line_end(text, start, _CR_LF), limit)
+            _mark(kinds, start, end, _COMMENT)
+        elif value == "/*":
+            end = _block_comment_end(text, start + 2, nested=False)
+            if end is None or end > limit:
+                return None
+            _mark(kinds, start, end, _COMMENT)
+        else:
+            literal = _PHP_QUOTED[value].match(text, start, limit)
+            if literal is None or (
+                value != "'" and _PHP_COMPLEX_FIELD.search(text, start, literal.end())
+            ):
+                return None
+            end = literal.end()
+            if value != "`":
+                # A backtick string is a shell command, not data.
+                _mark(kinds, start, end, _STRING)
+        index = end
+    return kinds
 
 
 # --- Python -------------------------------------------------------------------
@@ -1514,6 +1937,11 @@ _LEXERS: dict[str, Callable[[str], bytearray | None]] = {
     "c": _lex_c,
     "javascript": _lex_javascript,
     "typescript": partial(_lex_javascript, typescript=True),
+    "java": _lex_java,
+    "kotlin": _lex_kotlin,
+    "csharp": _lex_csharp,
+    "dart": _lex_dart,
+    "php": _lex_php,
     "python": _lex_python,
     "shell": _lex_shell,
     "dockerfile": _lex_dockerfile,

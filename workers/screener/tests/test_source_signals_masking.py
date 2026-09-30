@@ -130,11 +130,52 @@ _LANGUAGE_TABLE = [
     ),
     pytest.param("setup.cfg", "; c\n# d\nkey = a # e\n", ("; c", "# d"), (), id="ini"),
     pytest.param("README.md", "// x /* y */ # z\n", (), (), id="markdown"),
+    pytest.param(
+        "src/App.java",
+        "String u = \"http://x/*\"; char c = '/'; /* a // b */ run(); // c\n"
+        'String t = """\n  x // y\n  """;\n',
+        ("/* a // b */", "// c"),
+        (),
+        id="java",
+    ),
+    pytest.param(
+        "src/Main.kt",
+        'val u = "http://${h("/*")}/y"; val m = "id=$n!"; val c = \'"\'\n'
+        '/* a /* b */ c */ run() // d\nval r = """a // "q" """"; val `n // x` = 1\n',
+        ("/* a /* b */ c */", "// d"),
+        (),
+        id="kotlin",
+    ),
+    pytest.param(
+        "src/Program.cs",
+        'var u = "http://x/*"; var p = @"C:\\t"" // no"; var i = $"id={id,5:N2} //";\n'
+        "/* a // b */ Run(); // c\u2028Run2(); char q = '\"';\n#region r // message\n",
+        ("/* a // b */", "// c"),
+        (),
+        id="csharp",
+    ),
+    pytest.param(
+        "lib/main.dart",
+        "var u = 'http://x/y'; var s = 'a${f(\"/*\")}b $n.'; var r = r'\\';\n"
+        "/* a /* b */ c */ run(); // d\nvar m = '''\n// in string\n''';\n",
+        ("/* a /* b */ c */", "// d"),
+        (),
+        id="dart",
+    ),
+    pytest.param(
+        "src/index.php",
+        "<?php\n$u = 'http://x/y'; run(); # c\n"
+        '$g = "*/ $v[0] {"; /* a // b */ $o = `ls // x`; // d\n'
+        "#[Attr('// k')] function f() {}\n",
+        ("# c", "/* a // b */", "// d"),
+        (),
+        id="php",
+    ),
     pytest.param("web/app.jsx", "// x 'y' /* z\n", ("// x 'y' /* z",), (), id="jsx"),
     pytest.param(
         "web/view.jsx", "const v = <p>it's // x</p>; // c\n", (), (), id="jsx-element"
     ),
-    pytest.param("App.java", "// x\n", (), (), id="java"),
+    pytest.param("Sources/main.swift", '// x "y" /* z */\n', (), (), id="swift"),
 ]
 
 
@@ -218,6 +259,152 @@ def _decisive(path: str, source: str) -> list[dict[str, object]]:
 )
 def test_prose_never_becomes_a_decisive_finding(path: str, source: str) -> None:
     assert _decisive(path, source) == []
+
+
+# javac, kotlinc, Roslyn, the Dart scanner, and PHP 8.3 each read these lines
+# as a comment. Unmasked, the prose raised a decisive finding and stayed
+# citable as evidence.
+@pytest.mark.parametrize(
+    ("path", "source", "line"),
+    [
+        pytest.param(
+            "src/Sandbox.java",
+            "// Mounts /var/run/docker.sock and calls Runtime.getRuntime().exec(cmd).\n"
+            "public class Sandbox {}\n",
+            1,
+            id="java",
+        ),
+        pytest.param(
+            "src/Sandbox.kt",
+            "/* Mounts /var/run/docker.sock and calls\n"
+            "   Runtime.getRuntime().exec(cmd). */\nclass Sandbox\n",
+            2,
+            id="kotlin",
+        ),
+        pytest.param(
+            "src/Sandbox.cs",
+            "/// Mounts /var/run/docker.sock and calls Process.Start(cmd).\n"
+            "class Sandbox {}\n",
+            1,
+            id="csharp",
+        ),
+        pytest.param(
+            "lib/sandbox.dart",
+            "// Mounts /var/run/docker.sock and calls Process.run(cmd).\n"
+            "class Sandbox {}\n",
+            1,
+            id="dart",
+        ),
+        pytest.param(
+            "src/sandbox.php",
+            "<?php\n# Mounts /var/run/docker.sock and calls shell_exec($cmd).\n"
+            "class Sandbox {}\n",
+            2,
+            id="php",
+        ),
+    ],
+)
+def test_c_family_comment_prose_is_not_evidence(
+    path: str, source: str, line: int
+) -> None:
+    assert _decisive(path, source) == []
+    assert citation_admissibility(path, source, line).reason == "comment-or-blank"
+
+
+@pytest.mark.parametrize(
+    ("path", "source"),
+    [
+        pytest.param(
+            "src/S.java",
+            'class S { void m() throws Exception { new ProcessBuilder("curl",'
+            ' "--unix-socket", "/var/run/docker.sock", "http://x").start(); } }\n',
+            id="java",
+        ),
+        # The command is the string; the process-execution exception does
+        # not name PHP's APIs, so PHP strings stay visible to effect roles.
+        pytest.param(
+            "src/s.php",
+            "<?php\n$out = shell_exec("
+            "'curl --unix-socket /var/run/docker.sock http://x/containers/json');\n",
+            id="php-command-string",
+        ),
+    ],
+)
+def test_c_family_code_effects_are_still_found(path: str, source: str) -> None:
+    assert "malicious_build" in {
+        finding["category"] for finding in _decisive(path, source)
+    }
+
+
+# The real tool runs ``run()`` in each (javac 21, PHP 8.3, the .NET 8 SDK):
+# a Unicode escape, ``?>``, or a skipped ``#if`` section moves where the
+# comment ends, so the file is left unmasked rather than blanked to the line
+# end.
+@pytest.mark.parametrize(
+    ("path", "source"),
+    [
+        pytest.param(
+            "src/A.java",
+            "class A { void m() { // c \\u000a run();\n } }\n",
+            id="java-unicode-escape",
+        ),
+        pytest.param("src/a.php", "<?php // c ?> <?php run();\n", id="php-close-tag"),
+        pytest.param(
+            "src/P.cs",
+            "#if NEVER\n/*\n#endif\nRun();\n#if NEVER\n*/\n#endif\n",
+            id="csharp-skipped-section",
+        ),
+    ],
+)
+def test_a_construct_that_moves_a_comment_end_leaves_the_file_unmasked(
+    path: str, source: str
+) -> None:
+    assert mask_comments(source, path) == source
+
+
+# Literal forms these lexers do not bound. Each could hold ``/*`` or a quote
+# that a guess would read as a comment opener, blanking the call after it.
+@pytest.mark.parametrize(
+    ("path", "source"),
+    [
+        pytest.param(
+            "src/P.cs", 'var s = """a " /* b"""; Run(); // */\n', id="csharp-raw-string"
+        ),
+        pytest.param(
+            "src/P.cs", 'var s = $"{f("/*")}"; Run(); // */\n', id="csharp-field-quote"
+        ),
+        pytest.param(
+            "src/A.java",
+            'var s = STR."\\{f("/*")}"; run(); // */\n',
+            id="java-string-template",
+        ),
+        pytest.param(
+            "src/a.php",
+            "<?php\n$h = <<<EOT\n/*\nEOT;\nrun(); // */\n",
+            id="php-here-document",
+        ),
+        pytest.param(
+            "src/a.php",
+            '<?php\n$s = "{$a["/*"]}"; run(); // */\n',
+            id="php-complex-field",
+        ),
+        pytest.param(
+            "src/a.php", "<p>/* markup</p><?php run(); // */\n", id="php-markup-first"
+        ),
+    ],
+)
+def test_unbounded_c_family_literals_leave_the_file_unmasked(
+    path: str, source: str
+) -> None:
+    assert mask_comments(source, path) == source
+
+
+def test_csharp_comment_ends_at_every_csharp_line_break() -> None:
+    """Roslyn ends ``//`` at NEL, LS, and PS; ``Run()`` after each is code."""
+    for separator in ("\x85", "\u2028", "\u2029"):
+        source = f"class P {{ void M() {{ // c{separator}Run(); }} }}\n"
+
+        assert "Run();" in mask_comments(source, "src/P.cs")
 
 
 @pytest.mark.parametrize(
@@ -630,6 +817,14 @@ def test_python_that_does_not_tokenize_still_masks_hash_comments() -> None:
         ("web/server.mjs", "javascript"),
         ("web/app.tsx", "typescript"),
         ("web/app.jsx", "javascript"),
+        ("src/App.java", "java"),
+        ("src/Main.kt", "kotlin"),
+        ("build.gradle.kts", "kotlin"),
+        ("src/Program.cs", "csharp"),
+        ("lib/main.dart", "dart"),
+        ("public/index.php", "php"),
+        ("Sources/main.swift", None),
+        ("src/Main.scala", None),
         ("docker/Dockerfile.dev", "dockerfile"),
         ("build/app.dockerfile", "dockerfile"),
         ("Containerfile", "dockerfile"),
@@ -913,6 +1108,11 @@ _FUZZ_PATHS = [
     "a.md",
     "a.jsx",
     "a.tsx",
+    "a.java",
+    "a.kt",
+    "a.cs",
+    "a.dart",
+    "a.php",
 ]
 
 
@@ -937,6 +1137,11 @@ def test_masking_never_raises_and_only_blanks_on_arbitrary_text() -> None:
         pytest.param("csrc/a.c", "1" + "'1" * 50_000, id="c-digit-separators"),
         pytest.param("csrc/a.c", "a'b'" * 25_000, id="c-char-literal-chain"),
         pytest.param("scripts/run.sh", "\\" * 100_000 + " #x", id="shell-backslashes"),
+        pytest.param("src/P.cs", " #" * 100_000, id="csharp-directive-marks"),
+        pytest.param("src/A.java", "\\" * 200_000, id="java-backslashes"),
+        pytest.param("src/A.kt", '"${' * 50_000, id="kotlin-open-fields"),
+        pytest.param("lib/a.dart", "'${" * 50_000, id="dart-open-fields"),
+        pytest.param("src/a.php", "<?php " + '"$a' * 60_000, id="php-fields"),
     ],
 )
 def test_crafted_sources_lex_in_linear_time(path: str, source: str) -> None:
