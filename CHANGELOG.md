@@ -2,6 +2,45 @@
 
 <!-- version list -->
 
+## v0.331.0 (2026-09-30)
+
+### Bug Fixes
+
+- **platform**: Define name-claim entrenchment by earliest full-benchmark scored upload
+  ([#2541](https://github.com/ditto-assistant/ditto-subnet/pull/2541),
+  [`9ac62a9`](https://github.com/ditto-assistant/ditto-subnet/commit/9ac62a95736c89bf45dd15f541aabbad970b6c90))
+
+- **platform**: Show a neutral reason for the top-five double-check hold
+  ([#2547](https://github.com/ditto-assistant/ditto-subnet/pull/2547),
+  [`d490498`](https://github.com/ditto-assistant/ditto-subnet/commit/d490498accc81caaf45a857101c326c7ead6f7d5))
+
+- **validator**: Keep the weight loop alive when a ledger read fails
+  ([#2579](https://github.com/ditto-assistant/ditto-subnet/pull/2579),
+  [`3e977e3`](https://github.com/ditto-assistant/ditto-subnet/commit/3e977e3225b031d71df2f3e70942d8ffc4e07482))
+
+### Features
+
+- **backroom**: Route score reads to the continual retest diagnostic
+  ([#2542](https://github.com/ditto-assistant/ditto-subnet/pull/2542),
+  [`a7d2b7a`](https://github.com/ditto-assistant/ditto-subnet/commit/a7d2b7a064a3867aeca2b63a3a1a78f7c6b87f70))
+
+- **platform**: Expose the exact lease seed on validator assignments
+  ([#2556](https://github.com/ditto-assistant/ditto-subnet/pull/2556),
+  [`9dfdc24`](https://github.com/ditto-assistant/ditto-subnet/commit/9dfdc24b9d9b25cc6a85d2f9118791d079832a00))
+
+### Performance Improvements
+
+- **screener**: Hash provenance archive members in one pass
+  ([#2546](https://github.com/ditto-assistant/ditto-subnet/pull/2546),
+  [`b3dbd89`](https://github.com/ditto-assistant/ditto-subnet/commit/b3dbd891f81cdf290bd7cd1b4e8148d4e09c91e2))
+
+### Testing
+
+- **screener**: Package the starter kit like submit in the daily E2E
+  ([#2544](https://github.com/ditto-assistant/ditto-subnet/pull/2544),
+  [`5db4a8f`](https://github.com/ditto-assistant/ditto-subnet/commit/5db4a8f449dc5c0b6b844943370d365797885056))
+
+
 ## v0.330.16 (2026-09-30)
 
 ### Bug Fixes
