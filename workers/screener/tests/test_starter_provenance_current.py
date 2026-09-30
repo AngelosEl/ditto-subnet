@@ -14,6 +14,7 @@ import hashlib
 import json
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -27,6 +28,7 @@ from ditto_screener.source_review import (
     OpenRouterSourceReviewAgent,
     _load_provenance_manifest,
 )
+from scripts import generate_starter_provenance as generator
 from scripts.generate_starter_provenance import (
     ORIGIN,
     RUNTIME_MANIFESTS,
@@ -392,21 +394,52 @@ def test_generator_never_writes_into_the_runtime_manifest_set(
         f"starter-kit-provenance-v{manifest_number(active) + 100}.json"
     )
 
+    nested = RUNTIME_MANIFESTS / "nested" / target.name
+
     try:
         # Trusting a manifest is an explicit activation change, never
-        # generator output: neither a new runtime file nor an active version.
+        # generator output: not a runtime file, not anywhere else in the
+        # shipped package, and not an active version number.
         into_runtime = _generate(kit, target)
+        into_package = _generate(kit, nested)
         reused = _generate(kit, tmp_path / active.name)
     finally:
         for created in set(RUNTIME_MANIFESTS.iterdir()) - before:
-            created.unlink()
+            if created.is_dir():
+                shutil.rmtree(created)
+            else:
+                created.unlink()
 
-    assert into_runtime.returncode == 1
-    assert "runtime-loaded trust set" in into_runtime.stderr
+    for refused in (into_runtime, into_package):
+        assert refused.returncode == 1
+        assert "runtime-loaded trust set" in refused.stderr
     assert not target.exists()
+    assert not nested.parent.exists()
     assert reused.returncode == 1
     assert "already an active manifest" in reused.stderr
     assert not (tmp_path / active.name).exists()
+
+
+def test_generator_recreates_only_the_emptied_staging_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    kit = _starter_repository(tmp_path)
+    # Activation moves the last staged manifest away, and Git does not keep
+    # the emptied directory, so a fresh checkout has no staging directory.
+    staged = tmp_path / "staged-starter-provenance"
+    monkeypatch.setattr(generator, "STAGED_MANIFESTS", staged)
+    output = staged / "starter-kit-provenance-v999.json"
+
+    assert generator.main(["--starter-dir", str(kit), "--output", str(output)]) == 0
+    assert _load_provenance_manifest(output)["files"] == starter_files(kit)
+
+    # Any other missing directory is refused plainly and never created.
+    elsewhere = tmp_path / "missing" / "starter-kit-provenance-v999.json"
+    assert generator.main(["--starter-dir", str(kit), "--output", str(elsewhere)]) == 1
+    assert "does not exist" in capsys.readouterr().err
+    assert not elsewhere.parent.exists()
 
 
 def test_newest_manifest_orders_versions_numerically(tmp_path: Path) -> None:
