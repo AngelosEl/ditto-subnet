@@ -970,10 +970,17 @@ def test_review_leads_need_installed_manifest_for_starter_model(
 
 
 def _runtime_pinned_kit_source() -> tuple[str, bytes]:
-    """A kit source file whose exact bytes a runtime manifest already pins."""
+    """A kit file a runtime manifest pins and the preflight scans on its own.
+
+    ``malicious_preflight`` scans runtime paths, which leave out standalone
+    shell scripts, so the helper uses the same rule and checks it on the
+    one-file archive the tests build.
+    """
     files = _current_starter_kit_files()
     for path in sorted(_exact_starter_matches(files, _STARTER_MANIFESTS)):
-        if source_review_module.is_executable_source_path(path):
+        if source_review_module.is_executable_source_path(
+            path
+        ) and not source_review_module._is_standalone_shell_script(path):
             return path, files[path]
     pytest.skip("no runtime manifest pins a current kit source file")
 
@@ -1020,6 +1027,7 @@ def test_empty_manifest_override_trusts_nothing_in_preflight(
         source_review_module, "find_decisive_malicious_source", recording_detector
     )
     archive = str(_archive_files(tmp_path, {path: raw}))
+    assert path in TarSourceRepository(archive)._explicit_runtime_paths()
 
     TarSourceRepository(archive).malicious_preflight(artifact_sha256="a" * 64)
     if level == "repository":
@@ -1086,6 +1094,7 @@ def test_unreadable_manifest_set_trusts_nothing_in_preflight(
         source_review_module, "find_decisive_malicious_source", recording_detector
     )
     archive = str(_archive_files(tmp_path, {path: raw}))
+    assert path in TarSourceRepository(archive)._explicit_runtime_paths()
     manifests = (*_STARTER_MANIFESTS, _broken_manifest(tmp_path, kind))
 
     if level == "repository":
