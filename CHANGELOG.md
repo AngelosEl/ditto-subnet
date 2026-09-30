@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.332.3 (2026-09-30)
+
+### Bug Fixes
+
+- **screener**: Preserve v13 proof across prompt revisions
+  ([#2603](https://github.com/ditto-assistant/ditto-subnet/pull/2603),
+  [`205b18b`](https://github.com/ditto-assistant/ditto-subnet/commit/205b18b71d86e22c2ba12c7cd85bb7dd7bf1fd9c))
+
+
 ## v0.332.2 (2026-09-30)
 
 ### Bug Fixes
