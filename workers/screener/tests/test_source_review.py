@@ -4378,6 +4378,39 @@ def test_review_leads_keep_test_items_when_a_build_file_is_unread(
     }
 
 
+def test_review_leads_keep_script_tests_when_a_script_is_unread(
+    tmp_path: Path,
+) -> None:
+    answer = (
+        b"def answer_case(question):\n"
+        b"    answer = lookup(question)\n"
+        b"    return answer\n"
+    )
+    files = {"scripts/test_rehearsal.py": answer}
+    plain = TarSourceRepository(str(_archive_files(tmp_path, files))).review_leads(
+        (_untrusting_manifest(tmp_path),)
+    )
+    hidden_dir = tmp_path / "hidden"
+    hidden_dir.mkdir()
+
+    # An oversized script may import the test module, so the scripts/ test
+    # exemption is off rather than trusting what the lead scan could not read.
+    padding = b"#" * (2 * 1024 * 1024)
+    leads = TarSourceRepository(
+        str(
+            _archive_files(
+                hidden_dir,
+                {**files, "scripts/main.py": b"import test_rehearsal\n" + padding},
+            )
+        )
+    ).review_leads((_untrusting_manifest(tmp_path),))
+
+    assert plain["emulation_fingerprints"] == []
+    assert "sync-answer-constructor" in {
+        finding["kind"] for finding in leads["emulation_fingerprints"]
+    }
+
+
 def test_review_leads_not_starved_by_non_source_noise(tmp_path: Path) -> None:
     files = _current_starter_kit_sources()
     miner = (

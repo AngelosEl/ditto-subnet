@@ -618,10 +618,15 @@ Fingerprints skip Rust test-only items only while no binary the build makes can
 compile `cfg(test)`: any `--cfg`, `rustflags`, build script, harness build
 (`cargo test`, `bench`, `--tests`, `--all-targets`, a test profile), Cargo
 alias, `--config`, `.cargo` or `CARGO_HOME` configuration, or `rustc` wrapper
-keeps them scanned. They skip a `scripts/` test module only while no build
-file or executable source outside `scripts/` names it, names the `scripts`
-tree, runs a test runner, or has a glob that can expand to it; only Rust
-comments are ignored. Oversized context, or a build file or runnable source
+keeps them scanned. They skip a `scripts/` test module only while nothing
+runnable reaches it. Build files and every other executable source, non-test
+`scripts/` modules included, are roots. A root reaches a module by naming it as
+a whole identifier, and a reached test module reaches the modules it names.
+Any root running a test runner, a reached module calling a collection API, a
+glob that can expand to a test module, or a root outside `scripts/` naming the
+`scripts` tree keeps every module scanned. Test modules that only name each
+other stay skipped, since none runs unless a root reaches one. Only Rust
+comments are ignored. Oversized context, or a build file or executable source
 the lead scan could not read, keeps everything scanned. A name computed at run
 time is out of reach of this text check, so L1 and L2 still read every file.
 

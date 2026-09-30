@@ -2423,13 +2423,22 @@ _LOCKFILES = frozenset(
         "yarn.lock",
     }
 )
-# What the runnable build can use to reach a ``scripts/`` test module without
-# naming the module: the ``scripts`` tree itself, a test runner that discovers
-# test modules, or a glob that can expand to one.
-_SCRIPT_TEST_REACH = re.compile(
-    r"(?<![a-z0-9_])scripts(?![a-z0-9_])"
-    r"|(?<![a-z0-9_])(?:py\.?test|unittest|nose2|nosetests|tox)(?![a-z0-9_])"
-    r"|[*?][^\s\"'`;|&)]*\.py\b|test_[a-z0-9_]*\*"
+# How runnable code can reach a ``scripts/`` test module without naming it.
+# Naming the ``scripts`` tree counts only from outside it: a script inside
+# the tree is already treated as runnable, and naming its own directory
+# brings nothing new into the image.
+_SCRIPTS_TREE = re.compile(r"(?<![a-z0-9_])scripts(?![a-z0-9_])")
+# A glob that can expand to a test module.
+_SCRIPT_TEST_GLOB = re.compile(r"[*?][^\s\"'`;|&)]*\.py\b|test_[a-z0-9_]*\*")
+# A test runner that collects test modules. Test modules themselves import
+# these runners for their own cases, so inside one only an explicit
+# collection call counts.
+_TEST_RUNNER = re.compile(
+    r"(?<![a-z0-9_])(?:py\.?test|unittest|nose2|nosetests|tox)(?![a-z0-9_])"
+)
+_TEST_COLLECTION_CALL = re.compile(
+    r"\.discover\s*\(|(?<![a-z0-9_])(?:py\.?test|nose2?)\.main\s*\("
+    r"|-m\s+(?:py\.?test|unittest|nose2)(?![a-z0-9_])"
 )
 _IDENTIFIER = re.compile(r"[a-z0-9_]+")
 _MAX_SCRIPT_REACH_CHARS = 16 * 1024 * 1024
@@ -2503,24 +2512,35 @@ def _module_stem(path: str) -> str:
     return path.casefold().rsplit("/", 1)[-1].removesuffix(".py")
 
 
-def _is_script_reach_root(path: str) -> bool:
-    """A build file, or executable source outside ``scripts/``.
+def _is_linkable_script_test(path: str) -> bool:
+    """A ``scripts/`` test module whose name the build could be matched against."""
+    return _is_script_test_module(path) and (
+        _IDENTIFIER.fullmatch(_module_stem(path)) is not None
+    )
 
-    Everything the served build runs starts here, so a ``scripts/`` test
-    module is live only if one of these can reach it.
+
+def _is_script_reach_root(path: str) -> bool:
+    """A build file, or any executable source that is not a linkable test module.
+
+    Non-test ``scripts/`` modules count: a Dockerfile may copy and run the
+    tree, so a script that names a test module can run it.
     """
     normalized = path.casefold().removeprefix("./")
     return _is_build_control_path(normalized) or (
-        _is_executable_source_path(normalized) and not normalized.startswith("scripts/")
+        _is_executable_source_path(normalized)
+        and not _is_linkable_script_test(normalized)
     )
 
 
 def can_reach_test_code(path: str) -> bool:
     """Whether ``path`` can enable Rust test items or run a scripts/ test module.
 
-    If such a member was not read, callers must keep every item fingerprinted.
+    Any build file or executable source counts, test modules included, since
+    a reached test module can reach another. If such a member was not read,
+    callers must keep every item fingerprinted.
     """
-    return _is_script_reach_root(path)
+    normalized = path.casefold().removeprefix("./")
+    return _is_build_control_path(normalized) or _is_executable_source_path(normalized)
 
 
 def _unreached_script_tests(
@@ -2528,46 +2548,74 @@ def _unreached_script_tests(
 ) -> frozenset[str]:
     """``scripts/`` test modules in ``files`` that nothing runnable can reach.
 
-    A module is reachable when a build file or an executable source outside
-    ``scripts/`` (Rust comments masked) names it as a whole identifier, names
-    the ``scripts`` tree, invokes a test runner, or has a glob that can expand
-    to it. Oversized context skips nothing. A module invoked through a name
-    computed at run time is out of this text view's reach; L1 and L2 still
-    read every file.
+    Roots are build files and every executable source except linkable test
+    modules. A test module is reached when a root, or a test module already
+    reached, names it as a whole identifier. A root outside ``scripts/`` that
+    names the ``scripts`` tree, any root that runs a test runner, a reached
+    test module that calls a collection API, or a glob that can expand to a
+    test module keeps every module scanned. Test modules that only name each
+    other are not followed: none of them runs unless a root reaches one.
+
+    Only Rust comments are ignored. Oversized context skips nothing. A module
+    invoked through a name computed at run time is out of this text view's
+    reach; L1 and L2 still read every file.
     """
-    # A stem that is not a plain identifier cannot be matched by name, so
-    # that module is never skipped.
-    stems = {
-        _module_stem(path): path
-        for path, _ in files
-        if _is_script_test_module(path) and _IDENTIFIER.fullmatch(_module_stem(path))
+    candidates = {
+        _module_stem(path): path for path, _ in files if _is_linkable_script_test(path)
     }
-    if not stems:
+    if not candidates:
         return frozenset()
+    modules: dict[str, list[tuple[str, str]]] = {}
+    pending: list[tuple[str, str, bool]] = []
+    for path, text in context:
+        if _is_linkable_script_test(path):
+            modules.setdefault(_module_stem(path), []).append((path, text))
+        elif _is_script_reach_root(path):
+            pending.append((path, text, False))
+    names: Mapping[str, object] = {**modules, **candidates}
     reached: set[str] = set()
     size = 0
-    for path, text in context:
-        if not _is_script_reach_root(path):
-            continue
+    while pending:
+        path, text, followed = pending.pop()
         size += len(text)
         if size > _MAX_SCRIPT_REACH_CHARS:
             return frozenset()
-        # Only Rust comments are masked: the lexer is Rust's, and on a
-        # Dockerfile, shell, or Python file it would hide real text after
-        # ``/*`` or ``//``. Masking only blanks text, so a raw miss stays a
-        # miss and skips the lexer.
-        code = text.casefold()
-        if path.casefold().endswith(".rs") and (
-            _SCRIPT_TEST_REACH.search(code) or _named_stems(code, stems)
+        code = _script_reach_view(path, text, names)
+        inside = path.casefold().removeprefix("./").startswith("scripts/")
+        runner = _TEST_COLLECTION_CALL if followed else _TEST_RUNNER
+        if (
+            _SCRIPT_TEST_GLOB.search(code)
+            or runner.search(code)
+            or (not inside and _SCRIPTS_TREE.search(code))
         ):
-            code = _mask_comments(text).casefold()
-        if _SCRIPT_TEST_REACH.search(code) is not None:
             return frozenset()
-        reached.update(_named_stems(code, stems))
-    return frozenset(path for stem, path in stems.items() if stem not in reached)
+        for stem in _named_stems(code, names) - reached:
+            reached.add(stem)
+            pending.extend(
+                (linked, body, True) for linked, body in modules.get(stem, ())
+            )
+    return frozenset(path for stem, path in candidates.items() if stem not in reached)
 
 
-def _named_stems(text: str, stems: Mapping[str, str]) -> set[str]:
+def _script_reach_view(path: str, text: str, names: Mapping[str, object]) -> str:
+    """Casefolded text to search for reach, with only Rust comments masked.
+
+    The lexer is Rust's: on a Dockerfile, shell, or Python file it would hide
+    real text after ``/*`` or ``//``. Masking only blanks text, so a file
+    with no raw candidate skips the lexer.
+    """
+    code = text.casefold()
+    if path.casefold().endswith(".rs") and (
+        _SCRIPTS_TREE.search(code)
+        or _SCRIPT_TEST_GLOB.search(code)
+        or _TEST_RUNNER.search(code)
+        or _named_stems(code, names)
+    ):
+        code = _mask_comments(text).casefold()
+    return code
+
+
+def _named_stems(text: str, stems: Mapping[str, object]) -> set[str]:
     """Module stems that ``text`` names as whole identifiers, never substrings."""
     return {
         match.group() for match in _IDENTIFIER.finditer(text) if match.group() in stems

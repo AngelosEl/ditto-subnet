@@ -11,6 +11,7 @@ sync/async tell must stay silent on Go, where a real model call blocks.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -1552,6 +1553,15 @@ def test_prose_about_scripts_does_not_reach_a_script_test_module() -> None:
         ("Dockerfile", 'FROM python\nCOPY . .\nCMD ["python", "-m", "unittest"]\n'),
         ("run.sh", '#!/bin/sh\nfor f in */test_*.py; do python "$f"; done\n'),
         ("Dockerfile", "FROM python\nCOPY . .\nRUN python */*.py\n"),
+        (
+            "scripts/main.py",
+            "import test_rehearsal\n\ntest_rehearsal.answer_case('q')\n",
+        ),
+        ("scripts/cli.py", "import subprocess\n\nsubprocess.run(['pytest', '-q'])\n"),
+        (
+            "scripts/cli.py",
+            "import glob\n\nfor path in glob.glob('test_*.py'):\n    run(path)\n",
+        ),
     ],
     ids=[
         "dockerfile-path",
@@ -1565,6 +1575,9 @@ def test_prose_about_scripts_does_not_reach_a_script_test_module() -> None:
         "unittest-discovery",
         "shell-test-glob",
         "dockerfile-py-glob",
+        "non-test-script-import",
+        "non-test-script-runs-pytest",
+        "non-test-script-glob",
     ],
 )
 def test_scripts_test_module_the_build_can_reach_is_still_fingerprinted(
@@ -1575,6 +1588,55 @@ def test_scripts_test_module_the_build_can_reach_is_still_fingerprinted(
     assert "sync-answer-constructor" in _kinds(
         find_benchmark_emulation_fingerprints(files)
     )
+
+
+def _fingerprinted_paths(files: list[tuple[str, str]]) -> set[str]:
+    return {
+        str(location["path"])
+        for finding in find_benchmark_emulation_fingerprints(files)
+        for location in finding["locations"]  # type: ignore[attr-defined]
+    }
+
+
+def test_a_reached_test_module_reaches_the_modules_it_names() -> None:
+    # The served binary runs test_entry.py, which imports test_helpers; both
+    # can run, so a chain through test modules keeps every link scanned.
+    files = [
+        ("src/main.rs", 'fn main() { run("python3", "test_entry.py"); }\n'),
+        ("scripts/test_entry.py", "import test_helpers\n"),
+        ("scripts/test_helpers.py", _SYNC_ANSWER_SCRIPT),
+    ]
+
+    assert _fingerprinted_paths(files) == {"scripts/test_helpers.py"}
+
+
+def test_unreached_test_modules_that_name_each_other_stay_skipped() -> None:
+    # Neither module runs unless something runnable reaches one of them, so
+    # naming each other keeps neither scanned.
+    files = [
+        ("scripts/test_a.py", "import test_b\n" + _SYNC_ANSWER_SCRIPT),
+        ("scripts/test_b.py", "import test_a\n" + _SYNC_ANSWER_SCRIPT),
+        ("scripts/run.py", "# Usage: python3 scripts/run.py\n"),
+    ]
+
+    assert _fingerprinted_paths(files) == set()
+
+
+def test_a_reached_test_module_collecting_others_keeps_them_scanned() -> None:
+    # Importing unittest for its own cases collects nothing else, but an
+    # explicit discovery call can run every test module.
+    reached = ("src/main.rs", 'fn main() { run("python3", "test_entry.py"); }\n')
+    other = ("scripts/test_other.py", _SYNC_ANSWER_SCRIPT)
+    own_cases = ("scripts/test_entry.py", "import unittest\n\nunittest.main()\n")
+    discovery = (
+        "scripts/test_entry.py",
+        "import unittest\n\nunittest.TestLoader().discover('.')\n",
+    )
+
+    assert _fingerprinted_paths([reached, own_cases, other]) == set()
+    assert _fingerprinted_paths([reached, discovery, other]) == {
+        "scripts/test_other.py"
+    }
 
 
 def test_script_test_stems_match_whole_identifiers_only() -> None:
@@ -1628,12 +1690,30 @@ def test_raw_starter_kit_fingerprints_skip_test_items_and_script_tests() -> None
     }
 
     findings = find_benchmark_emulation_fingerprints(files)
+    unexempted = find_benchmark_emulation_fingerprints(
+        files, build_context_complete=False
+    )
 
+    def script_test_paths(results: list[dict[str, object]]) -> set[str]:
+        return {
+            str(location["path"])
+            for finding in results
+            for location in finding["locations"]  # type: ignore[attr-defined]
+            if str(location["path"]).startswith("scripts/test_")
+        }
+
+    # The exemption drops fingerprints from kit script tests that no kit
+    # script names; one named only in another script's comment stays
+    # scanned, because a Python comment is read like code here.
+    assert script_test_paths(unexempted) - script_test_paths(findings)
+    for path in script_test_paths(findings):
+        stem = path.rsplit("/", 1)[-1].removesuffix(".py")
+        assert any(
+            re.search(rf"(?<![A-Za-z0-9_]){stem}(?![A-Za-z0-9_])", text)
+            for other, text in files
+            if other != path and not other.rsplit("/", 1)[-1].startswith("test_")
+        ), path
     for finding in findings:
         for location in finding["locations"]:
             path, line = str(location["path"]), int(location["line"])
-            name = path.rsplit("/", 1)[-1]
-            assert not (path.startswith("scripts/") and name.startswith("test_")), (
-                finding
-            )
             assert line not in test_lines.get(path, frozenset()), finding
