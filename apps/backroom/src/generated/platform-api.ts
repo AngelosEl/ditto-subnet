@@ -18550,6 +18550,12 @@ export interface components {
              */
             rollout_standdown: "off" | "capable_validators" | "all";
             /**
+             * Statistical Band Mode
+             * @default disabled
+             * @enum {string}
+             */
+            statistical_band_mode: "disabled" | "fleet_ready";
+            /**
              * Tie Weighting Mode
              * @default disabled
              * @enum {string}
@@ -19369,6 +19375,21 @@ export interface components {
              * @enum {string}
              */
             source: "revision" | "default";
+            /**
+             * Statistical Band Active
+             * @default false
+             */
+            statistical_band_active: boolean;
+            /**
+             * Statistical Band Fleet Ready
+             * @default false
+             */
+            statistical_band_fleet_ready: boolean;
+            /**
+             * Statistical Band Required Protocol
+             * @default 29
+             */
+            statistical_band_required_protocol: number;
             /**
              * Tie Weighting Active
              * @default false
@@ -21956,6 +21977,11 @@ export interface components {
              * @default false
              */
             stale: boolean;
+            /**
+             * Statistical Band Mode
+             * @description Protocol-29 consensus marker. When capped, paired tie and unpaired dethrone statistics are limited to twice the KOTH margin before decay. Absent preserves the legacy fold.
+             */
+            statistical_band_mode?: "capped" | null;
             /**
              * Tie Weighting Mode
              * @description Consensus activation marker for tie-aware rank-share pooling. When set to pool, exact effective-score ties share the slots they occupy; non-exact ties require valid paired shared-seed evidence. Absent keeps the historical fixed rank shares.

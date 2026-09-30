@@ -2975,9 +2975,8 @@ class TestPublicLeaderboard:
         # Both reigns sit under ``KOTH_BAND_DECAY_START_COMPOSITE`` (0.60) so the
         # v6-and-later indifference-band decay leaves the required lead at its
         # unscaled value. What is on trial here is the dethrone decision itself
-        # -- that a real 0.05 lead is still short of the statistical bar -- and
-        # the decay has its own test; on the live era a 0.80 champion shrinks the
-        # band enough to flip this challenger and hide the distinction entirely.
+        # -- that a real 0.05 lead is still short of the legacy statistical
+        # bar without the protocol-29 marker -- and the decay has its own test.
         incumbent_id = await _seed_k3(
             session_maker,
             miner=_MINER_A,

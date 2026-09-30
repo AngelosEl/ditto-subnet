@@ -2042,6 +2042,7 @@ describe('continual retest administration', () => {
   // wave_membership predates #489 and is folding `strict`.
   const readDefaults = {
     tie_weighting_mode: 'disabled' as const,
+    statistical_band_mode: 'disabled' as const,
     ledger_pin_mode: 'epoch' as const,
     crown_incumbent_mode: 'disabled' as const,
     wave_membership: 'participants',
@@ -2075,6 +2076,9 @@ describe('continual retest administration', () => {
       aggregate_active: false,
       tie_weighting_fleet_ready: false,
       tie_weighting_active: false,
+      statistical_band_fleet_ready: false,
+      statistical_band_active: false,
+      statistical_band_required_protocol: 29,
       crown_incumbent_fleet_ready: false,
       crown_incumbent_active: false,
       crown_incumbent_required_protocol: 27,
@@ -2091,6 +2095,7 @@ describe('continual retest administration', () => {
   }
   const supportFor = (carried: boolean) => ({
     tie_weighting_mode: carried,
+    statistical_band_mode: carried,
     ledger_pin_mode: carried,
     crown_incumbent_mode: carried,
     retest_cohort_size: carried,
@@ -2111,6 +2116,7 @@ describe('continual retest administration', () => {
     const nextSettings = {
       aggregate_mode: 'enabled',
       tie_weighting_mode: 'disabled' as const,
+      statistical_band_mode: 'disabled' as const,
       ledger_pin_mode: 'epoch' as const,
       crown_incumbent_mode: 'disabled' as const,
       idle_retests_enabled: true,
