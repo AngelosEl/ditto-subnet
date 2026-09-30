@@ -2,6 +2,7 @@
 
 from collections.abc import AsyncIterator
 from dataclasses import replace
+from typing import Any
 
 import httpx
 import pytest
@@ -124,7 +125,7 @@ async def test_v2_service_wallets_are_shadow_only_and_v1_history_is_preserved(
     legacy = await client.post(_URL, headers=_HEADERS, json=_payload())
     assert legacy.status_code == 200, legacy.text
 
-    settings = {
+    settings: dict[str, Any] = {
         "allocation_version": 2,
         "service_buckets": [
             {
@@ -162,7 +163,7 @@ async def test_v2_service_wallets_are_shadow_only_and_v1_history_is_preserved(
     assert current["history"][1]["settings"]["allocation_version"] == 1
     assert current["history"][1]["settings"]["gm_bps"] == 50
 
-    invalid = [
+    invalid: list[dict[str, Any]] = [
         {"service_buckets": [settings["service_buckets"][0]] * 2},
         {
             "service_buckets": [

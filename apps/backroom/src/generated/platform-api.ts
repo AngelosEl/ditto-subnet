@@ -27693,10 +27693,7 @@ export interface components {
             actor_public_id: string;
             /** Allocated Alpha Rao */
             allocated_alpha_rao: string;
-            /**
-             * Allocation Bps
-             * @default 0
-             */
+            /** Allocation Bps */
             allocation_bps: number;
             /** Block Hash */
             block_hash: string;
@@ -32681,7 +32678,10 @@ export interface components {
         };
         /** TreasuryServiceBucket */
         TreasuryServiceBucket: {
-            /** Allocation Bps */
+            /**
+             * Allocation Bps
+             * @default 0
+             */
             allocation_bps: number;
             /** Bucket Id */
             bucket_id: string;
@@ -32735,11 +32735,8 @@ export interface components {
              * @constant
              */
             mode: "shadow";
-            /**
-             * Service Buckets
-             * @default []
-             */
-            service_buckets: components["schemas"]["TreasuryServiceBucket"][];
+            /** Service Buckets */
+            service_buckets?: components["schemas"]["TreasuryServiceBucket"][];
             /** Treasury Coldkey */
             treasury_coldkey?: string | null;
             /** Treasury Hotkey */

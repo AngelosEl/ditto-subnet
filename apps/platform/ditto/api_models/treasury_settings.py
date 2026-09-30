@@ -50,9 +50,9 @@ class TreasurySettings(BaseModel):
     allocation_version: Literal[1, 2] = 1
     maintenance_bps: Annotated[int, Field(ge=0, le=MAX_TREASURY_BPS)] = 0
     gm_bps: Annotated[int, Field(ge=0, le=MAX_TREASURY_BPS)] = 0
-    service_buckets: Annotated[
-        list[TreasuryServiceBucket], Field(default_factory=list, max_length=20)
-    ]
+    service_buckets: list[TreasuryServiceBucket] = Field(
+        default_factory=list, max_length=20
+    )
     treasury_hotkey: str | None = None
     treasury_coldkey: str | None = None
     gm_account_ref: str | None = None
