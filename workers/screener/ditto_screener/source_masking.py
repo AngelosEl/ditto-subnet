@@ -90,6 +90,7 @@ _LANGUAGE_BY_SUFFIX = {
     ".cs": "csharp",
     ".dart": "dart",
     ".php": "php",
+    ".zig": "zig",
     ".py": "python",
     ".pyi": "python",
     ".pyw": "python",
@@ -1144,6 +1145,38 @@ def _lex_php(text: str) -> bytearray | None:
     return kinds
 
 
+# Zig has only line comments (``//``, and ``///``/``//!`` doc comments), no
+# block comments, and three literal forms: one-line strings and char literals
+# (``@"..."`` names use the string form) and ``\\`` multi-line string lines,
+# which run raw to the end of their line.
+_ZIG_TOKEN = re.compile(r"//|\\\\|[\"']")
+_ZIG_QUOTED = {
+    quote: re.compile(rf"{quote}(?:[^{quote}\\\n]|\\[^\n])*{quote}") for quote in "\"'"
+}
+
+
+def _lex_zig(text: str) -> bytearray | None:
+    """Zig: line comments, one-line strings and chars, ``\\\\`` string lines."""
+    kinds = bytearray(len(text))
+    index = 0
+    while (token := _ZIG_TOKEN.search(text, index)) is not None:
+        start, value = token.start(), token.group()
+        if value == "//":
+            end = _line_end(text, start, _CR_LF)
+            _mark(kinds, start, end, _COMMENT)
+        elif value == "\\\\":
+            end = _line_end(text, start, _CR_LF)
+            _mark(kinds, start, end, _STRING)
+        else:
+            literal = _ZIG_QUOTED[value].match(text, start)
+            if literal is None:
+                return None
+            end = literal.end()
+            _mark(kinds, start, end, _STRING)
+        index = end
+    return kinds
+
+
 # --- Python -------------------------------------------------------------------
 
 _PY_NEWLINE = re.compile(r"\r\n|\r|\n")
@@ -1942,6 +1975,7 @@ _LEXERS: dict[str, Callable[[str], bytearray | None]] = {
     "csharp": _lex_csharp,
     "dart": _lex_dart,
     "php": _lex_php,
+    "zig": _lex_zig,
     "python": _lex_python,
     "shell": _lex_shell,
     "dockerfile": _lex_dockerfile,

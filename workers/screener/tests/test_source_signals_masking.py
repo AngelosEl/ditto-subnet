@@ -17,6 +17,7 @@ from ditto_screener.rust_test_items import test_only_item_lines as rust_test_ite
 from ditto_screener.source_masking import language_for_path
 from ditto_screener.source_signals import (
     find_decisive_malicious_source,
+    find_source_review_leads,
     mask_comments,
     mask_string_literals,
 )
@@ -174,6 +175,14 @@ _LANGUAGE_TABLE = [
     pytest.param("web/app.jsx", "// x 'y' /* z\n", ("// x 'y' /* z",), (), id="jsx"),
     pytest.param(
         "web/view.jsx", "const v = <p>it's // x</p>; // c\n", (), (), id="jsx-element"
+    ),
+    pytest.param(
+        "src/main.zig",
+        "const s = \"a // b\"; const c = '/'; // c\n/// doc\nconst m =\n"
+        '    \\\\ x // y\n;\nconst n = @"q // r";\n',
+        ("// c", "/// doc"),
+        (),
+        id="zig",
     ),
     pytest.param("Sources/main.swift", '// x "y" /* z */\n', (), (), id="swift"),
 ]
@@ -405,6 +414,13 @@ def test_csharp_comment_ends_at_every_csharp_line_break() -> None:
         source = f"class P {{ void M() {{ // c{separator}Run(); }} }}\n"
 
         assert "Run();" in mask_comments(source, "src/P.cs")
+
+
+def test_a_zig_comment_raises_no_source_review_lead() -> None:
+    """The maintainer's case: every role of the lead cited the comment."""
+    source = "// grader slot contains token override\nfn main() {}\n"
+
+    assert find_source_review_leads([("src/main.zig", source)]) == []
 
 
 @pytest.mark.parametrize(
@@ -823,6 +839,7 @@ def test_python_that_does_not_tokenize_still_masks_hash_comments() -> None:
         ("src/Program.cs", "csharp"),
         ("lib/main.dart", "dart"),
         ("public/index.php", "php"),
+        ("src/main.zig", "zig"),
         ("Sources/main.swift", None),
         ("src/Main.scala", None),
         ("docker/Dockerfile.dev", "dockerfile"),
@@ -1113,6 +1130,7 @@ _FUZZ_PATHS = [
     "a.cs",
     "a.dart",
     "a.php",
+    "a.zig",
 ]
 
 
@@ -1142,6 +1160,7 @@ def test_masking_never_raises_and_only_blanks_on_arbitrary_text() -> None:
         pytest.param("src/A.kt", '"${' * 50_000, id="kotlin-open-fields"),
         pytest.param("lib/a.dart", "'${" * 50_000, id="dart-open-fields"),
         pytest.param("src/a.php", "<?php " + '"$a' * 60_000, id="php-fields"),
+        pytest.param("src/main.zig", "'\\" * 100_000, id="zig-escapes"),
     ],
 )
 def test_crafted_sources_lex_in_linear_time(path: str, source: str) -> None:
