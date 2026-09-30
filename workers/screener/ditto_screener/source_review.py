@@ -2513,12 +2513,17 @@ class TarSourceRepository:
     """A read-only, size-bounded view over regular files in a verified tarball."""
 
     def __init__(
-        self, archive_path: str, *, static_preflight_v2_mode: str = "off"
+        self,
+        archive_path: str,
+        *,
+        static_preflight_v2_mode: str = "off",
+        provenance_manifest_paths: tuple[str, ...] | None = None,
     ) -> None:
         if static_preflight_v2_mode not in {"off", "shadow", "enforce"}:
             raise ValueError("static preflight mode must be off, shadow, or enforce")
         self._archive_path = archive_path
         self._static_preflight_v2_mode = static_preflight_v2_mode
+        self._provenance_manifest_paths = provenance_manifest_paths
         self._binary_analysis_cache: dict[str, dict[str, object]] = {}
         self._member_digests: dict[str, str] | None = None
         members: list[_Member] = []
@@ -2738,9 +2743,24 @@ class TarSourceRepository:
                 opaque = opaque[: max(0, len(opaque) // 2)]
                 binary_analysis = binary_analysis[: len(opaque)]
 
-    def review_leads(self) -> dict[str, object]:
-        """Precompute bounded location-only leads without exposing source text."""
+    def review_leads(
+        self, provenance_manifest_paths: tuple[str, ...] | None = None
+    ) -> dict[str, object]:
+        """Precompute bounded location-only leads without exposing source text.
+
+        Rule leads and emulation fingerprints point the reviewer at code the
+        miner wrote. A file whose exact path and sha256 ship in a runtime
+        starter manifest was not, so it stays out of those two scans; a staged
+        manifest grants nothing, and one changed byte breaks the match and
+        keeps every lead. Reachability, static-v2 advisories, and the other
+        whole-program analyses still read every file, because a miner-authored
+        chain can run through an unmodified starter file.
+        """
+        manifests = self._starter_manifests(provenance_manifest_paths)
+        trusted_digests = _trusted_starter_digests(manifests)
         readable: list[tuple[str, str]] = []
+        miner_readable: list[tuple[str, str]] = []
+        trusted_starter_skipped = 0
         bytes_scanned = 0
         files_scanned = 0
         members_considered = 0
@@ -2757,7 +2777,7 @@ class TarSourceRepository:
             for name in ordered_names:
                 member_info = self._members[name]
                 if member_info.size > _OPAQUE_SIZE_LIMIT:
-                    model = self._published_starter_model(archive, name)
+                    model = self._published_starter_model(archive, name, manifests)
                     if model is None:
                         truncated = True
                     else:
@@ -2782,6 +2802,12 @@ class TarSourceRepository:
                     continue
                 readable.append((name, text))
                 files_scanned += 1
+                # Only a path some manifest pins can match, so hash just those.
+                pinned = trusted_digests.get(name)
+                if pinned and hashlib.sha256(raw).hexdigest() in pinned:
+                    trusted_starter_skipped += 1
+                else:
+                    miner_readable.append((name, text))
         static_advisories: list[dict[str, object]] = []
         if self._static_preflight_v2_mode != "off":
             reachability = analyze_reachability(dict(readable))
@@ -2797,10 +2823,12 @@ class TarSourceRepository:
                 for item in static_v2.advisory[:16]
             ]
         return {
-            "items": [*find_source_review_leads(readable), *static_advisories][
+            "items": [*find_source_review_leads(miner_readable), *static_advisories][
                 :_MAX_LEAD_SCAN_FILES
             ],
-            "emulation_fingerprints": find_benchmark_emulation_fingerprints(readable),
+            "emulation_fingerprints": find_benchmark_emulation_fingerprints(
+                miner_readable
+            ),
             "unmatchable_category_guards": guard_report(
                 find_unmatchable_category_guards(
                     (path, mask_comments(text, path)) for path, text in readable
@@ -2811,20 +2839,30 @@ class TarSourceRepository:
                 self._review_adaptive_model_routing_analysis(readable)
             ),
             "files_scanned": files_scanned,
+            "trusted_starter_skipped": trusted_starter_skipped,
             "members_considered": members_considered,
             "bytes_scanned": bytes_scanned,
             "nontext": nontext,
             "truncated": truncated,
         }
 
+    def _starter_manifests(self, override: tuple[str, ...] | None) -> tuple[str, ...]:
+        """A per-call manifest set, else the repository's, else the runtime set.
+
+        Only ``None`` falls through; an explicit empty tuple trusts nothing.
+        """
+        return _starter_manifest_paths(
+            override if override is not None else self._provenance_manifest_paths
+        )
+
     def _published_starter_model(
-        self, archive: tarfile.TarFile, name: str
+        self, archive: tarfile.TarFile, name: str, manifests: tuple[str, ...]
     ) -> dict[str, object] | None:
         """Account for an oversized member only as the exact starter model."""
         member_info = self._members[name]
         if name != _STARTER_MODEL_PATH or member_info.size > _MAX_STARTER_MODEL_BYTES:
             return None
-        digests = _starter_model_digests()
+        digests = _starter_model_digests(manifests)
         if not digests:
             return None
         member = archive.getmember(member_info.archive_name)
@@ -2937,20 +2975,9 @@ class TarSourceRepository:
         if mode not in {"off", "shadow", "enforce"}:
             raise ValueError("static preflight mode must be off, shadow, or enforce")
         readable: list[tuple[str, str]] = []
-        manifests = provenance_manifest_paths or tuple(
-            str(path)
-            for path in sorted(
-                (Path(__file__).parent / "data").glob("starter-kit-provenance-*.json")
-            )
+        trusted_digests = _trusted_starter_digests(
+            self._starter_manifests(provenance_manifest_paths)
         )
-        trusted_digests: dict[str, set[str]] = {}
-        for manifest_path in manifests:
-            manifest = _load_provenance_manifest(Path(manifest_path))
-            files = manifest["files"]
-            assert isinstance(files, dict)
-            for path, digest in files.items():
-                assert isinstance(path, str) and isinstance(digest, str)
-                trusted_digests.setdefault(path, set()).add(digest)
         bytes_scanned = 0
         members_considered = 0
         runtime_paths = self.runtime_paths()
@@ -2980,7 +3007,7 @@ class TarSourceRepository:
                     continue
                 raw = extracted.read(member_info.size + 1)
                 trusted = hashlib.sha256(raw).hexdigest() in trusted_digests.get(
-                    name, set()
+                    name, ()
                 )
                 if trusted:
                     trusted_paths.add(name)
@@ -3662,14 +3689,7 @@ class OpenRouterSourceReviewAgent:
         self._provenance_manifest_files = (
             (provenance_manifest_file,)
             if provenance_manifest_file is not None
-            else tuple(
-                str(path)
-                for path in sorted(
-                    (Path(__file__).parent / "data").glob(
-                        "starter-kit-provenance-*.json"
-                    )
-                )
-            )
+            else _starter_manifest_paths()
         )
         self._transport = transport
 
@@ -3688,6 +3708,7 @@ class OpenRouterSourceReviewAgent:
             repository = TarSourceRepository(
                 archive_path,
                 static_preflight_v2_mode=self._static_preflight_v2_mode,
+                provenance_manifest_paths=self._provenance_manifest_files,
             )
             result, clearance_certified = await self._run(
                 repository,
@@ -4666,12 +4687,12 @@ def _bounded_json(value: object) -> str:
     )
 
 
-def _starter_model_digests() -> set[str]:
-    """Starter-model SHA-256 values published by every installed manifest."""
+def _starter_model_digests(manifests: tuple[str, ...]) -> set[str]:
+    """Starter-model SHA-256 values published by the given manifests."""
     digests: set[str] = set()
     try:
-        for path in sorted(_STARTER_MANIFEST_DIR.glob("starter-kit-provenance-*.json")):
-            files = _load_provenance_manifest(path)["files"]
+        for manifest in manifests:
+            files = _load_provenance_manifest(Path(manifest))["files"]
             if isinstance(files, dict) and isinstance(
                 files.get(_STARTER_MODEL_PATH), str
             ):
@@ -4742,6 +4763,40 @@ def _load_provenance_manifest(path: Path) -> dict[str, object]:
         ):
             raise ValueError("provenance manifest Rust function entry is invalid")
     return value
+
+
+def _starter_manifest_paths(
+    override: tuple[str, ...] | None = None,
+) -> tuple[str, ...]:
+    """The runtime starter manifests, unless a caller pins its own set.
+
+    ``None`` means the runtime set, and only ``data/`` is globbed, so a
+    manifest staged outside it is never trusted. An explicit tuple is used as
+    given: an empty one trusts nothing.
+    """
+    if override is not None:
+        return override
+    return tuple(
+        str(path)
+        for path in sorted(_STARTER_MANIFEST_DIR.glob("starter-kit-provenance-*.json"))
+    )
+
+
+def _trusted_starter_digests(
+    override: tuple[str, ...] | None = None,
+) -> dict[str, frozenset[str]]:
+    """Map each starter path to every exact sha256 a runtime manifest pins.
+
+    Trust is exact path plus digest only; there is no near or fuzzy match.
+    """
+    trusted: dict[str, set[str]] = {}
+    for manifest_path in _starter_manifest_paths(override):
+        files = _load_provenance_manifest(Path(manifest_path))["files"]
+        assert isinstance(files, dict)
+        for path, digest in files.items():
+            assert isinstance(path, str) and isinstance(digest, str)
+            trusted.setdefault(path, set()).add(digest)
+    return {path: frozenset(digests) for path, digests in trusted.items()}
 
 
 _TOOLS: list[dict[str, object]] = [

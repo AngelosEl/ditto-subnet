@@ -602,8 +602,23 @@ bypass. Medium/high findings require evidence for every category. Benchmark
 emulation and scorer-contract manipulation require at least two distinct,
 validated source locations covering the trigger and effect. Location-only
 review leads in the initial inventory are search prompts, not findings; the
-reviewer must prove they are reachable before citing them. The following are
-insufficient on their own:
+reviewer must prove they are reachable before citing them.
+
+The bounded rule leads and emulation fingerprints cover only miner-authored
+bytes. A file whose exact path and sha256 appear in a runtime starter manifest
+(`ditto_screener/data/`) is left out of both scans and counted in
+`trusted_starter_skipped`; a staged manifest grants nothing, and one changed
+byte keeps all of a file's leads. Reachability, static-v2 advisories, category
+guards, generator mirroring, and review-adaptation analysis still read every
+file. Executable and build files fill the lead cap before docs and data
+fixtures, which keep their leads in whatever capacity remains. Test-named
+modules count as executable source, and apart from the two keep-preference
+fingerprints that already skip them, fingerprints still scan Rust test-only
+items. Source text cannot prove either unserved: a runtime-loaded path, a base
+image, or a computed build value can serve them without any text the archive
+shows.
+
+The following are insufficient on their own:
 
 - tuned parameters or multiple candidate profiles;
 - generic answer-slot parsing;

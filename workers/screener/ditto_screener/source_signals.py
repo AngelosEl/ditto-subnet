@@ -1726,7 +1726,13 @@ def find_source_review_leads(
 ) -> list[dict[str, object]]:
     """Return bounded location-only review leads from readable source files."""
     leads: list[dict[str, object]] = []
-    for path, text in sorted(files, key=lambda item: _path_priority(item[0])):
+    # The lead cap is spent on executable and build files first. Docs and data
+    # fixtures keep their leads (a fixture can still be compiled in or read as
+    # an answer table), but only in the capacity the executable surface
+    # leaves, so they cannot starve a miner source file that sorts after them.
+    # Test-named modules count as executable: whether they are served cannot
+    # be proved from source text.
+    for path, text in sorted(files, key=lambda item: _lead_path_priority(item[0])):
         lines = text.splitlines()
         if not lines:
             continue
@@ -2223,6 +2229,12 @@ def _is_executable_source_path(path: str) -> bool:
             )
         )
     )
+
+
+def _lead_path_priority(path: str) -> tuple[int, int, str]:
+    """Executable and build files before every other file, then path order."""
+    executable = _is_executable_source_path(path) or _is_build_file(path)
+    return (0 if executable else 1, *_path_priority(path))
 
 
 def _path_priority(path: str) -> tuple[int, str]:
