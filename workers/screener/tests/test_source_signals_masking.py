@@ -130,7 +130,10 @@ _LANGUAGE_TABLE = [
     ),
     pytest.param("setup.cfg", "; c\n# d\nkey = a # e\n", ("; c", "# d"), (), id="ini"),
     pytest.param("README.md", "// x /* y */ # z\n", (), (), id="markdown"),
-    pytest.param("web/app.jsx", "// x 'y' /* z\n", (), (), id="jsx"),
+    pytest.param("web/app.jsx", "// x 'y' /* z\n", ("// x 'y' /* z",), (), id="jsx"),
+    pytest.param(
+        "web/view.jsx", "const v = <p>it's // x</p>; // c\n", (), (), id="jsx-element"
+    ),
     pytest.param("App.java", "// x\n", (), (), id="java"),
 ]
 
@@ -625,7 +628,8 @@ def test_python_that_does_not_tokenize_still_masks_hash_comments() -> None:
         ("stubs/x.pyi", "python"),
         ("src/main.rs", "rust"),
         ("web/server.mjs", "javascript"),
-        ("web/app.tsx", None),
+        ("web/app.tsx", "typescript"),
+        ("web/app.jsx", "javascript"),
         ("docker/Dockerfile.dev", "dockerfile"),
         ("build/app.dockerfile", "dockerfile"),
         ("Containerfile", "dockerfile"),
@@ -907,6 +911,8 @@ _FUZZ_PATHS = [
     ".env",
     "a.ini",
     "a.md",
+    "a.jsx",
+    "a.tsx",
 ]
 
 

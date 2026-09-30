@@ -73,14 +73,17 @@ _LANGUAGE_BY_SUFFIX = {
     ".hh": "c",
     ".hpp": "c",
     ".hxx": "c",
-    # JSX/TSX are deliberately absent: JSX text (``<p>Don't</p>``) is not
-    # lexable without a JSX parser, so those files stay unmasked.
+    # JSX text (``<p>Don't</p>``) is not lexable without a JSX parser, but a
+    # JSX element can only start where an expression does, where the lexer
+    # leaves any ``<`` unmasked; a JSX/TSX file without one lexes as JS/TS.
     ".js": "javascript",
     ".mjs": "javascript",
     ".cjs": "javascript",
+    ".jsx": "javascript",
     ".ts": "typescript",
     ".mts": "typescript",
     ".cts": "typescript",
+    ".tsx": "typescript",
     ".py": "python",
     ".pyi": "python",
     ".pyw": "python",
