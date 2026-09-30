@@ -618,6 +618,14 @@ items. Source text cannot prove either unserved: a runtime-loaded path, a base
 image, or a computed build value can serve them without any text the archive
 shows.
 
+Leads, fingerprints, and category guards match roles outside comments, read
+by each file's language. Where no lexer covers the language (Swift, Ruby,
+Lua, and the like) or the lexer leaves the file unmasked, they skip whole
+comment lines by that language's markers instead. That can also skip a line
+of a multi-line string, so it is used only where a miss costs a lead: the
+decisive preflight, static proofs, and citation admissibility read the file
+whole.
+
 The following are insufficient on their own:
 
 - tuned parameters or multiple candidate profiles;

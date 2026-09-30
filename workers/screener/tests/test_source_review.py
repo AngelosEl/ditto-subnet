@@ -7179,6 +7179,28 @@ def test_runtime_script_under_tests_dir_keeps_its_citation(tmp_path: Path) -> No
     assert unreferenced.categories == ("none",)
 
 
+@pytest.mark.parametrize(
+    ("path", "prefix"),
+    [("Sources/a.swift", "// "), ("src/app.rb", "# "), ("src/main.zig", "// ")],
+)
+def test_a_category_comparison_in_a_comment_is_not_a_dead_guard(
+    tmp_path: Path, path: str, prefix: str
+) -> None:
+    """Swift and Ruby have no lexer; the comment line still is not a branch."""
+    guard = 'if category.contains("proal-reas") { return answer; }\n'
+
+    def guards(source: str) -> list[object]:
+        repo = TarSourceRepository(
+            str(_archive_files(tmp_path, {path: source.encode()}))
+        )
+        report = repo.review_leads()["unmatchable_category_guards"]
+        assert isinstance(report, dict)
+        return list(report["guards"])
+
+    assert guards(prefix + guard) == []
+    assert len(guards(guard)) == 1
+
+
 def test_served_rust_after_a_braceless_cfg_test_module_stays_high(
     tmp_path: Path,
 ) -> None:

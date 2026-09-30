@@ -50,7 +50,7 @@ from ditto_screener.source_signals import (
     find_decisive_malicious_source,
     find_source_review_leads,
     is_executable_source_path,
-    mask_comments,
+    mask_lead_comments,
     source_path_priority,
 )
 from ditto_screening_protocol import (
@@ -2831,7 +2831,7 @@ class TarSourceRepository:
             ),
             "unmatchable_category_guards": guard_report(
                 find_unmatchable_category_guards(
-                    (path, mask_comments(text, path)) for path, text in readable
+                    (path, mask_lead_comments(text, path)) for path, text in readable
                 )
             ),
             "generator_mirroring": self._generator_mirroring_analysis(readable),

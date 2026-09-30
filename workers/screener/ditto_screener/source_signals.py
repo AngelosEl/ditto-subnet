@@ -13,7 +13,11 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 
 from ditto_screener.rust_test_items import test_only_item_lines
-from ditto_screener.source_masking import mask_comments, mask_string_literals
+from ditto_screener.source_masking import (
+    mask_comments,
+    mask_lead_comments,
+    mask_string_literals,
+)
 
 _MAX_LEADS = 32
 _MAX_LEADS_PER_RULE_FILE = 4
@@ -1740,8 +1744,9 @@ def find_source_review_leads(
         # reading the raw line: a suppressor is a false-positive guard, and a
         # guard that fires too readily costs a missed lead, while a role that
         # fires on prose costs a wrongly quarantined miner. The brief's
-        # asymmetry (prefer false negatives) picks the direction.
-        code_lines = mask_comments(text, path).splitlines()
+        # asymmetry (prefer false negatives) picks the direction, which is why
+        # a language without a lexer still has its comment lines blanked here.
+        code_lines = mask_lead_comments(text, path).splitlines()
         code_lines.extend([""] * (len(lines) - len(code_lines)))
         for rule in _RULES:
             if rule.build_files_only and not _is_build_file(path):
@@ -1933,7 +1938,7 @@ def find_benchmark_emulation_fingerprints(
         raw_lines = text.splitlines()
         if not raw_lines:
             continue
-        code_lines = mask_comments(text, path).splitlines()
+        code_lines = mask_lead_comments(text, path).splitlines()
         code_lines.extend([""] * (len(raw_lines) - len(code_lines)))
         test_item_lines: frozenset[int] | None = None
         for fingerprint in _EMULATION_FINGERPRINTS:
@@ -2264,6 +2269,7 @@ __all__ = [
     "find_source_review_leads",
     "is_executable_source_path",
     "mask_comments",
+    "mask_lead_comments",
     "mask_remote_urls",
     "mask_string_literals",
     "source_path_priority",

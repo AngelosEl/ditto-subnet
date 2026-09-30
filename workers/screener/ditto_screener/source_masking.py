@@ -38,6 +38,7 @@ __all__ = [
     "CHAR_LITERAL",
     "language_for_path",
     "mask_comments",
+    "mask_lead_comments",
     "mask_python_code",
     "mask_rust_literals",
     "mask_string_literals",
@@ -163,6 +164,30 @@ def mask_comments(text: str, path: str) -> str:
     """
     kinds = _kinds_for(text, path)
     return text if kinds is None else _blank(text, kinds, _COMMENT)
+
+
+def mask_lead_comments(text: str, path: str) -> str:
+    """Blank comments for automatic role matching: leads, guards, fingerprints.
+
+    Where a lexer masks the file this is ``mask_comments``. For a language
+    without one (Swift, Ruby, Lua, ...), or a source its lexer leaves
+    unmasked, whole comment lines are blanked by the language's markers: a
+    line whose first text opens a line comment, and a block comment that
+    opens a line, through its first closer. That can also blank a line of a
+    multi-line string, or code after a block comment closes on a later line,
+    so this view is only for rules whose miss costs attention: a role that
+    fires on prose raises an unsupported lead, while a missed lead leaves the
+    source fully read by the reviewer. The decisive preflight, static proofs,
+    and citation admissibility read ``mask_comments``, which leaves such a
+    file whole.
+    """
+    kinds = _kinds_for(text, path)
+    if kinds is not None:
+        return _blank(text, kinds, _COMMENT)
+    family = _comment_family(path)
+    if family is None or not text:
+        return text
+    return _blank_comment_lines(text, family)
 
 
 def mask_string_literals(text: str, path: str) -> str:
@@ -1962,6 +1987,153 @@ _lex_requirements = _regex_comments(re.compile(r"(?:^|(?<=[ \t]))(#[^\n]*)", re.
 # comments are masked.
 _lex_dotenv = _regex_comments(re.compile(r"^[ \t]*(#[^\n]*)", re.M))
 _lex_ini = _regex_comments(re.compile(r"^[ \t]*([#;][^\n]*)", re.M))
+
+
+# --- Comment lines for automatic role matching -------------------------------
+
+
+class _CommentFamily:
+    """Markers that open a comment at the start of a line in some language."""
+
+    __slots__ = ("block", "line", "not_line")
+
+    def __init__(
+        self,
+        line: tuple[str, ...],
+        block: tuple[str, str] | None = None,
+        not_line: tuple[str, ...] = (),
+    ) -> None:
+        self.line = line
+        self.block = block
+        # A line opener that starts something else: ``#{...}`` interpolation
+        # at the start of a Ruby or Elixir heredoc line, a PHP ``#[`` attribute.
+        self.not_line = not_line
+
+
+_SLASH = _CommentFamily(("//",), ("/*", "*/"))
+_HASH = _CommentFamily(("#",))
+_HASH_INTERPOLATING = _CommentFamily(("#",), not_line=("#{",))
+_COMMENT_FAMILIES = {
+    "rust": _SLASH,
+    "go": _SLASH,
+    "c": _SLASH,
+    "javascript": _SLASH,
+    "typescript": _SLASH,
+    "java": _SLASH,
+    "kotlin": _SLASH,
+    "csharp": _SLASH,
+    "dart": _SLASH,
+    "zig": _SLASH,
+    "php": _CommentFamily(("//", "#"), ("/*", "*/"), not_line=("#[",)),
+    "python": _HASH,
+    "shell": _HASH,
+    "dockerfile": _HASH,
+    "toml": _HASH,
+    "yaml": _HASH,
+    "make": _HASH,
+    "requirements": _HASH,
+    "dotenv": _HASH,
+    "ini": _CommentFamily(("#", ";")),
+}
+# Languages the lexers do not cover, by file name or suffix: every executable
+# suffix and build file the screener treats as runtime surface, and languages
+# that may sit under ``src/``.
+_UNLEXED_FAMILY_BY_NAME = {
+    "build.gradle": _SLASH,
+    "settings.gradle": _SLASH,
+    "deno.json": _SLASH,
+    "deno.jsonc": _SLASH,
+    "cmakelists.txt": _HASH,
+    "gemfile": _HASH_INTERPOLATING,
+    "rakefile": _HASH_INTERPOLATING,
+    "pom.xml": _CommentFamily((), ("<!--", "-->")),
+}
+_UNLEXED_FAMILY_BY_SUFFIX = {
+    ".swift": _SLASH,
+    ".scala": _SLASH,
+    ".sc": _SLASH,
+    ".groovy": _SLASH,
+    ".gradle": _SLASH,
+    ".m": _SLASH,
+    ".mm": _SLASH,
+    ".fs": _CommentFamily(("//",), ("(*", "*)")),
+    ".fsx": _CommentFamily(("//",), ("(*", "*)")),
+    ".rb": _HASH_INTERPOLATING,
+    ".rake": _HASH_INTERPOLATING,
+    ".gemspec": _HASH_INTERPOLATING,
+    ".ex": _HASH_INTERPOLATING,
+    ".exs": _HASH_INTERPOLATING,
+    ".cr": _HASH_INTERPOLATING,
+    ".pl": _HASH,
+    ".pm": _HASH,
+    ".r": _HASH,
+    ".jl": _HASH,
+    ".nim": _HASH,
+    ".cmake": _HASH,
+    ".lua": _CommentFamily(("--",)),
+    ".hs": _CommentFamily(("--",), ("{-", "-}")),
+    ".sql": _CommentFamily(("--",), ("/*", "*/")),
+    ".erl": _CommentFamily(("%",)),
+    ".hrl": _CommentFamily(("%",)),
+    ".ml": _CommentFamily((), ("(*", "*)")),
+    ".mli": _CommentFamily((), ("(*", "*)")),
+    ".clj": _CommentFamily((";",)),
+    ".cljs": _CommentFamily((";",)),
+    ".el": _CommentFamily((";",)),
+}
+
+
+def _comment_family(path: str) -> _CommentFamily | None:
+    language = language_for_path(path)
+    if language is not None:
+        return _COMMENT_FAMILIES.get(language)
+    name = path.rsplit("/", 1)[-1].casefold()
+    family = _UNLEXED_FAMILY_BY_NAME.get(name)
+    if family is not None:
+        return family
+    dot = name.rfind(".")
+    return _UNLEXED_FAMILY_BY_SUFFIX.get(name[dot:]) if dot > 0 else None
+
+
+def _blank_comment_lines(text: str, family: _CommentFamily) -> str:
+    """Blank whole comment lines, and block comments opened at a line start."""
+    pieces: list[str] = []
+    closer_after = -1 if family.block is None else text.rfind(family.block[1])
+    open_block = False
+    position = 0
+    for number, line in enumerate(text.splitlines(keepends=True)):
+        position += len(line)
+        if open_block:
+            assert family.block is not None
+            close = line.find(family.block[1])
+            if close < 0:
+                pieces.append(_BLANKABLE.sub(" ", line))
+                continue
+            open_block = False
+            end = close + len(family.block[1])
+            pieces.append(_BLANKABLE.sub(" ", line[:end]) + line[end:])
+            continue
+        head = line.lstrip(" \t")
+        if number == 0 and head.startswith("#!"):
+            pieces.append(line)
+            continue
+        if head.startswith(family.line) and not head.startswith(family.not_line):
+            pieces.append(_BLANKABLE.sub(" ", line))
+            continue
+        if family.block is not None and head.startswith(family.block[0]):
+            opener, closer = family.block
+            offset = len(line) - len(head)
+            close = line.find(closer, offset + len(opener))
+            if close >= 0:
+                end = close + len(closer)
+                pieces.append(_BLANKABLE.sub(" ", line[:end]) + line[end:])
+            else:
+                # Blank on through the first closer; without one, only this line.
+                open_block = closer_after >= position
+                pieces.append(_BLANKABLE.sub(" ", line))
+            continue
+        pieces.append(line)
+    return "".join(pieces)
 
 
 _LEXERS: dict[str, Callable[[str], bytearray | None]] = {

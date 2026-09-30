@@ -16,9 +16,11 @@ from ditto_screener.evidence_quality import citation_admissibility
 from ditto_screener.rust_test_items import test_only_item_lines as rust_test_items
 from ditto_screener.source_masking import language_for_path
 from ditto_screener.source_signals import (
+    find_benchmark_emulation_fingerprints,
     find_decisive_malicious_source,
     find_source_review_leads,
     mask_comments,
+    mask_lead_comments,
     mask_string_literals,
 )
 
@@ -416,11 +418,177 @@ def test_csharp_comment_ends_at_every_csharp_line_break() -> None:
         assert "Run();" in mask_comments(source, "src/P.cs")
 
 
+_OVERRIDE_PROSE = "grader slot contains token override"
+
+
 def test_a_zig_comment_raises_no_source_review_lead() -> None:
     """The maintainer's case: every role of the lead cited the comment."""
-    source = "// grader slot contains token override\nfn main() {}\n"
+    source = f"// {_OVERRIDE_PROSE}\nfn main() {{}}\n"
 
     assert find_source_review_leads([("src/main.zig", source)]) == []
+
+
+# Each comment raised a challenge-shaped-retrieval-override lead whose roles
+# all cited the comment: the language had no lexer (or, for the JSX and Java
+# files, its lexer leaves the file unmasked). The same words as code still do.
+@pytest.mark.parametrize(
+    ("path", "comment", "code"),
+    [
+        pytest.param(
+            "src/main.zig",
+            f"// {_OVERRIDE_PROSE}\nfn main() {{}}\n",
+            f'const note = "{_OVERRIDE_PROSE}";\n',
+            id="zig",
+        ),
+        pytest.param(
+            "Sources/main.swift",
+            f"/// {_OVERRIDE_PROSE}\nlet x = 1\n",
+            f'let note = "{_OVERRIDE_PROSE}"\n',
+            id="swift",
+        ),
+        pytest.param(
+            "src/Main.scala",
+            f"/*\n * {_OVERRIDE_PROSE}\n */\nobject Main\n",
+            f'val note = "{_OVERRIDE_PROSE}"\n',
+            id="scala-block",
+        ),
+        pytest.param(
+            "build.gradle",
+            f"// {_OVERRIDE_PROSE}\napply plugin: 'java'\n",
+            f"def note = '{_OVERRIDE_PROSE}'\n",
+            id="gradle",
+        ),
+        pytest.param(
+            "src/App.fs",
+            f"(* {_OVERRIDE_PROSE} *)\nlet x = 1\n",
+            f'let note = "{_OVERRIDE_PROSE}"\n',
+            id="fsharp",
+        ),
+        pytest.param(
+            "src/app.rb",
+            f"# {_OVERRIDE_PROSE}\nputs 1\n",
+            f'note = "{_OVERRIDE_PROSE}"\n',
+            id="ruby",
+        ),
+        pytest.param(
+            "lib/app.ex",
+            f"# {_OVERRIDE_PROSE}\nIO.puts 1\n",
+            f'note = "{_OVERRIDE_PROSE}"\n',
+            id="elixir",
+        ),
+        pytest.param(
+            "src/app.lua",
+            f"-- {_OVERRIDE_PROSE}\nprint(1)\n",
+            f'local note = "{_OVERRIDE_PROSE}"\n',
+            id="lua",
+        ),
+        pytest.param(
+            "src/app.erl",
+            f"% {_OVERRIDE_PROSE}\n-module(app).\n",
+            f'Note = "{_OVERRIDE_PROSE}".\n',
+            id="erlang",
+        ),
+        pytest.param(
+            "src/app.hs",
+            f"-- {_OVERRIDE_PROSE}\nmain = pure ()\n",
+            f'note = "{_OVERRIDE_PROSE}"\n',
+            id="haskell",
+        ),
+        pytest.param(
+            "src/app.ml",
+            f"(* {_OVERRIDE_PROSE} *)\nlet x = 1\n",
+            f'let note = "{_OVERRIDE_PROSE}"\n',
+            id="ocaml",
+        ),
+        pytest.param(
+            "src/app.pl",
+            f"# {_OVERRIDE_PROSE}\nprint 1;\n",
+            f'my $note = "{_OVERRIDE_PROSE}";\n',
+            id="perl",
+        ),
+        pytest.param(
+            "src/app.jl",
+            f"# {_OVERRIDE_PROSE}\nx = 1\n",
+            f'note = "{_OVERRIDE_PROSE}"\n',
+            id="julia",
+        ),
+        pytest.param(
+            "CMakeLists.txt",
+            f"# {_OVERRIDE_PROSE}\nproject(x)\n",
+            f'set(NOTE "{_OVERRIDE_PROSE}")\n',
+            id="cmake",
+        ),
+        pytest.param(
+            "pom.xml",
+            f"<!-- {_OVERRIDE_PROSE} -->\n<project/>\n",
+            f"<note>{_OVERRIDE_PROSE}</note>\n",
+            id="maven",
+        ),
+        pytest.param(
+            "src/App.jsx",
+            f"// {_OVERRIDE_PROSE}\nexport const A = () => <p>hi</p>;\n",
+            f'const note = "{_OVERRIDE_PROSE}";\n',
+            id="jsx-left-unmasked",
+        ),
+        pytest.param(
+            "src/A.java",
+            f"// {_OVERRIDE_PROSE}\nclass A {{ char c = '\\u0041'; }}\n",
+            f'class A {{ String n = "{_OVERRIDE_PROSE}"; }}\n',
+            id="java-left-unmasked",
+        ),
+    ],
+)
+def test_a_comment_line_raises_no_lead_in_any_listed_language(
+    path: str, comment: str, code: str
+) -> None:
+    assert find_source_review_leads([(path, comment)]) == []
+    assert find_source_review_leads([(path, code)]) != []
+
+
+def test_a_jsx_comment_line_raises_no_fingerprint() -> None:
+    """The JSX element leaves the file unmasked; the comment line is still prose."""
+    gate = "function run(r) { if (r.benchVersion === 11) return canned(); }\n"
+    element = "export const A = () => <p>hi</p>;\n"
+
+    assert (
+        find_benchmark_emulation_fingerprints([("src/a.jsx", element + "// " + gate)])
+        == []
+    )
+    assert find_benchmark_emulation_fingerprints([("src/a.jsx", element + gate)]) != []
+
+
+def test_comment_lines_leave_the_security_views_whole() -> None:
+    """Only lead matching drops comment-looking lines of an unlexed language.
+
+    ``sh`` runs ``//usr/bin/curl``: the line is a string the shell executes.
+    Leads may miss it, but the decisive preflight and citation admissibility
+    read the full source. A Ruby ``#{...}`` heredoc line is code, so the lead
+    view keeps it too.
+    """
+    swift = (
+        'let script = """\n'
+        "//usr/bin/curl --unix-socket /var/run/docker.sock http://x/containers/json\n"
+        '"""\n'
+        'let p = Process(); p.launchPath = "/bin/sh"; p.arguments = ["-c", script]\n'
+    )
+    ruby = 'key = <<~RUBY\n#{File.read(File.expand_path("~/.ssh/id_rsa"))}\nRUBY\n'
+
+    assert mask_comments(swift, "Sources/main.swift") == swift
+    assert not mask_lead_comments(swift, "Sources/main.swift").splitlines()[1].strip()
+    assert "malicious_build" in {
+        f["category"] for f in _decisive("Sources/main.swift", swift)
+    }
+    assert citation_admissibility("Sources/main.swift", swift, 2).admissible
+    assert mask_lead_comments(ruby, "src/app.rb") == ruby
+    assert "credential_access" in {f["category"] for f in _decisive("src/app.rb", ruby)}
+
+
+def test_a_block_comment_line_view_stops_at_its_closer() -> None:
+    source = "/* a\n b */ let y = f()\n/*/ no closer\nlet z = g()\n"
+
+    assert mask_lead_comments(source, "Sources/main.swift") == (
+        "    \n      let y = f()\n             \nlet z = g()\n"
+    )
 
 
 @pytest.mark.parametrize(
@@ -1131,6 +1299,10 @@ _FUZZ_PATHS = [
     "a.dart",
     "a.php",
     "a.zig",
+    "a.swift",
+    "a.rb",
+    "a.ml",
+    "pom.xml",
 ]
 
 
@@ -1141,7 +1313,11 @@ def test_masking_never_raises_and_only_blanks_on_arbitrary_text() -> None:
         raw = "".join(rng.choice(_FUZZ_PIECES) for _ in range(rng.randint(0, 60)))
         for path in _FUZZ_PATHS:
             comment_masked = mask_comments(raw, path)
-            for masked in (comment_masked, mask_string_literals(comment_masked, path)):
+            for masked in (
+                comment_masked,
+                mask_string_literals(comment_masked, path),
+                mask_lead_comments(raw, path),
+            ):
                 assert len(masked) == len(raw)
                 assert len(masked.splitlines()) == len(raw.splitlines())
                 assert all(a == b or b == " " for a, b in zip(raw, masked, strict=True))
@@ -1161,6 +1337,7 @@ def test_masking_never_raises_and_only_blanks_on_arbitrary_text() -> None:
         pytest.param("lib/a.dart", "'${" * 50_000, id="dart-open-fields"),
         pytest.param("src/a.php", "<?php " + '"$a' * 60_000, id="php-fields"),
         pytest.param("src/main.zig", "'\\" * 100_000, id="zig-escapes"),
+        pytest.param("src/a.swift", "/*\n" * 50_000, id="unlexed-block-openers"),
     ],
 )
 def test_crafted_sources_lex_in_linear_time(path: str, source: str) -> None:
