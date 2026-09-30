@@ -11,8 +11,8 @@ Carve approved service buckets from the **full miner emission vector before
 burn**. Let `S = sum(bucket_bps) / 10_000` and `B = burn_share`. Bucket `i`
 receives `bucket_bps[i] / 10_000` of that vector. The remaining `1 - S` is
 the virtual miner share: `B * (1 - S)` routes to the existing burn hotkey and
-`(1 - B) * (1 - S)` goes to eligible miners. At today's `B = 1`, the proposed
-GM 1,000 bps would still receive 10%; the other 90% would burn. An empty
+`(1 - B) * (1 - S)` goes to eligible miners. At today's `B = 1`, the combined
+1,000 bps service pool would still receive 10%; the other 90% would burn. An empty
 eligible miner vector burns its entire `(1 - S)` remainder while preserving
 approved service allocations. A missing, unregistered, or unverified service
 recipient fails closed under a separately reviewed policy; it must never
@@ -20,9 +20,9 @@ silently redirect that allocation to another service or to a miner.
 Scoring recovery, screening admission, treasury allocation and burn changes
 remain independent decisions.
 
-For the initial GM-only proposal (`S = 0.10`):
+For the confirmed combined service pool (`S = 0.10`):
 
-| Burn of miner remainder | GM | Burn | Eligible miners |
+| Burn of miner remainder | Services combined | Burn | Eligible miners |
 | ---: | ---: | ---: | ---: |
 | 100% | 10% | 90% | 0% |
 | 50% | 10% | 45% | 45% |
@@ -70,9 +70,9 @@ identified holding coldkey:
 
 | Bucket | Purpose | Initial bps | Holding wallet | Spend destination |
 | --- | --- | ---: | --- | --- |
-| `gm_credits` | GM inference credit | 1,000 proposed | dedicated coldkey holding swept SN118 stake | current GM Billing instructions |
-| `bitsec_audits` | independent security audits | 0 | separate coldkey holding swept SN118 stake | approved Bitsec invoice |
-| `bitcast_ads` | advertising campaigns | 0 | separate coldkey holding swept SN118 stake | approved Bitcast campaign invoice |
+| `gm_credits` | GM inference credit | pending split | dedicated coldkey holding swept SN118 stake | current GM Billing instructions |
+| `bitsec_audits` | independent security audits | pending split | separate coldkey holding swept SN118 stake | approved Bitsec invoice |
+| `bitcast_ads` | advertising campaigns | pending split | separate coldkey holding swept SN118 stake | approved Bitcast campaign invoice |
 
 The collector hotkey must be registered on SN118 and independently verified
 as owned by the collector coldkey, distinct from the subnet owner's burn

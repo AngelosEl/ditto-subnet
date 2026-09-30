@@ -16,7 +16,7 @@
   padding: 3px 7px;
   font-size: 12px;
   font-weight: 500;
-  color: var(--muted);
+  color: var(--text-dim);
 }
 .gamma-page p {
   max-width: 72ch;
@@ -38,12 +38,12 @@
 }
 .gamma-section-title span,
 .gamma-caption {
-  color: var(--muted);
+  color: var(--text-dim);
   font-size: 12px;
 }
 .gamma-notice {
   padding: 16px;
-  background: var(--surface);
+  background: var(--bg-elev);
   border: 1px solid var(--border);
 }
 .gamma-split {
@@ -54,7 +54,7 @@
 }
 .gamma-split dt,
 .gamma-wallets dt {
-  color: var(--muted);
+  color: var(--text-dim);
   font-size: 13px;
 }
 .gamma-split dd {
@@ -84,11 +84,11 @@
 }
 .gamma-table th {
   font-size: 12px;
-  color: var(--muted);
+  color: var(--text-dim);
 }
 .gamma-table td small {
   display: block;
-  color: var(--muted);
+  color: var(--text-dim);
   margin-top: 5px;
 }
 .gamma-address {
@@ -112,7 +112,7 @@
 }
 .gamma-rule span {
   margin-left: 12px;
-  color: var(--muted);
+  color: var(--text-dim);
   font-size: 12px;
 }
 @media (max-width: 600px) {

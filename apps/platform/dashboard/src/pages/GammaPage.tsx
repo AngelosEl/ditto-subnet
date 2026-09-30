@@ -48,7 +48,7 @@ export function GammaPage(): JSX.Element {
     <section class="page active gamma-page" data-page="gamma" aria-label="Gamma treasury">
       <header class="gamma-intro">
         <h2>
-          Gamma <span class="gamma-beta">Beta</span>
+          Service treasury <span class="gamma-beta">Beta</span>
         </h2>
         <p>
           Service funding and the public wallet trail. Gamma token details will be published here
