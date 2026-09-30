@@ -9,7 +9,7 @@ never leave the archive through this module.
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable
 from dataclasses import dataclass
 
 from ditto_screener.rust_test_items import test_only_item_lines
@@ -72,10 +72,8 @@ class _Fingerprint:
     comment-masked code view (``"code"``) or the raw view that also sees comments
     and strings (``"raw"``). ``skip_test_items`` blanks Rust items that an
     attribute affirmatively restricts to the test build (``#[test]``,
-    ``#[cfg(test)]``) before matching: ``/run`` never reaches a test-only item
-    unless the build turns ``cfg(test)`` on, which keeps them scanned. It is on
-    for every fingerprint; set it to ``False`` only for a tell that is served
-    even when parked in test-gated code.
+    ``#[cfg(test)]``) before matching, for tells whose honest look-alike is the
+    same text parked in a test-only helper that ``/run`` never reaches.
     """
 
     kind: str
@@ -86,7 +84,7 @@ class _Fingerprint:
     scan: str = "code"
     languages: frozenset[str] = frozenset()
     min_hits: int = 1
-    skip_test_items: bool = True
+    skip_test_items: bool = False
 
 
 def _words(value: str) -> re.Pattern[str]:
@@ -1673,6 +1671,7 @@ _EMULATION_FINGERPRINTS = (
         ),
         window=6,
         scan="code",
+        skip_test_items=True,
     ),
     _Fingerprint(
         # keep-continuity-capability-rekey (aceron_v21, 2026-09-16): the same
@@ -1716,6 +1715,7 @@ _EMULATION_FINGERPRINTS = (
         ),
         window=40,
         scan="code",
+        skip_test_items=True,
     ),
 )
 
@@ -1725,11 +1725,12 @@ def find_source_review_leads(
 ) -> list[dict[str, object]]:
     """Return bounded location-only review leads from readable source files."""
     leads: list[dict[str, object]] = []
-    # The lead cap is spent on executable and build files first. Docs, data
-    # fixtures, and script test modules keep their leads (a fixture can still
-    # be compiled in or read as an answer table), but only in the capacity
-    # the executable surface leaves, so they cannot starve a miner source file
-    # that happens to sort after them.
+    # The lead cap is spent on executable and build files first. Docs and data
+    # fixtures keep their leads (a fixture can still be compiled in or read as
+    # an answer table), but only in the capacity the executable surface
+    # leaves, so they cannot starve a miner source file that sorts after them.
+    # Test-named modules count as executable: whether they are served cannot
+    # be proved from source text.
     for path, text in sorted(files, key=lambda item: _lead_path_priority(item[0])):
         lines = text.splitlines()
         if not lines:
@@ -1903,9 +1904,6 @@ def _fingerprint_language(path: str) -> str | None:
 
 def find_benchmark_emulation_fingerprints(
     files: Iterable[tuple[str, str]],
-    *,
-    build_context: Iterable[tuple[str, str]] | None = None,
-    build_context_complete: bool = True,
 ) -> list[dict[str, object]]:
     """Return bench-v12 anti-emulation fingerprints as location-only review leads.
 
@@ -1920,27 +1918,10 @@ def find_benchmark_emulation_fingerprints(
     serve/run entrypoint. Scanning is language-aware: each file is classified from
     its suffix, and a fingerprint whose tell is language-specific runs only on the
     languages it applies to.
-
-    Rust test-only items and ``scripts/`` test modules are not served, so they
-    are skipped, but only while ``build_context`` (default: ``files``) shows
-    that the build cannot compile ``cfg(test)`` in or reach that module. Pass
-    the whole readable archive as ``build_context`` when ``files`` is a subset,
-    and ``build_context_complete=False`` when a member that could change either
-    answer was not readable: then nothing is skipped.
     """
-    files = list(files)
-    context = files if build_context is None else list(build_context)
-    skip_rust_test_items = build_context_complete and _rust_test_items_are_inert(
-        context
-    )
-    skipped_script_tests = (
-        _unreached_script_tests(files, context)
-        if build_context_complete
-        else frozenset()
-    )
     findings: list[dict[str, object]] = []
     for path, text in sorted(files, key=lambda item: _path_priority(item[0])):
-        if not _is_executable_source_path(path) or path in skipped_script_tests:
+        if not _is_executable_source_path(path):
             continue
         language = _fingerprint_language(path)
         if language is None:
@@ -1956,11 +1937,7 @@ def find_benchmark_emulation_fingerprints(
                 continue
             scan_lines = code_lines if fingerprint.scan == "code" else raw_lines
             fingerprint_raw_lines = raw_lines
-            if (
-                fingerprint.skip_test_items
-                and skip_rust_test_items
-                and language == "rust"
-            ):
+            if fingerprint.skip_test_items and language == "rust":
                 if test_item_lines is None:
                     test_item_lines = _rust_test_item_lines(code_lines)
                 if test_item_lines:
@@ -2384,249 +2361,9 @@ def _is_executable_source_path(path: str) -> bool:
     )
 
 
-# Build inputs that can compile ``cfg(test)`` items into a served binary, or
-# that change how Cargo compiles from somewhere this text view cannot read.
-# Any match keeps Rust test items fingerprinted.
-_RUST_TEST_BUILD = re.compile(
-    # ``--cfg test`` from any flag source, a build script's ``rustc-cfg``, and
-    # any RUSTFLAGS or ``rustflags`` setting, whatever its value.
-    r"--cfg\b|rustc-cfg|rustflags"
-    # Harness builds compile the crate with ``--test``.
-    r"|\bcargo\s+(?:\+\S+\s+)?"
-    r"(?:t|test|bench|nextest|tarpaulin|llvm-cov|miri|mutants)\b"
-    r"|--(?:tests?|bench(?:es)?|all-targets)\b"
-    r"|--profile[=\s]+[\"']?(?:test|bench)\b|\brustc\b[^\n]*\s--test\b"
-    # Cargo configuration, aliases, or compiler substitutes defined elsewhere.
-    r"|--config\b|\[alias\]|rustc[-_](?:workspace[-_])?wrapper|\brustc\s*="
-    r"|build_rustc\b|\.cargo\b|/cargo\b|cargo_home"
-    # A custom build script can emit a computed ``rustc-cfg``.
-    r"|^\s*build\s*=\s*[\"']",
-    re.IGNORECASE | re.MULTILINE,
-)
-_MAX_BUILD_CONTROL_CHARS = 8 * 1024 * 1024
-# A lockfile pins versions only; it cannot set flags or run a script.
-_LOCKFILES = frozenset(
-    {
-        "bun.lock",
-        "bun.lockb",
-        "cargo.lock",
-        "composer.lock",
-        "deno.lock",
-        "gemfile.lock",
-        "go.sum",
-        "mix.lock",
-        "package-lock.json",
-        "pipfile.lock",
-        "pnpm-lock.yaml",
-        "poetry.lock",
-        "uv.lock",
-        "yarn.lock",
-    }
-)
-# How runnable code can reach a ``scripts/`` test module without naming it.
-# Naming the ``scripts`` tree counts only from outside it: a script inside
-# the tree is already treated as runnable, and naming its own directory
-# brings nothing new into the image.
-_SCRIPTS_TREE = re.compile(r"(?<![a-z0-9_])scripts(?![a-z0-9_])")
-# A glob that can expand to a test module.
-_SCRIPT_TEST_GLOB = re.compile(r"[*?][^\s\"'`;|&)]*\.py\b|test_[a-z0-9_]*\*")
-# A test runner that collects test modules. Test modules themselves import
-# these runners for their own cases, so inside one only an explicit
-# collection call counts.
-_TEST_RUNNER = re.compile(
-    r"(?<![a-z0-9_])(?:py\.?test|unittest|nose2|nosetests|tox)(?![a-z0-9_])"
-)
-_TEST_COLLECTION_CALL = re.compile(
-    r"\.discover\s*\(|(?<![a-z0-9_])(?:py\.?test|nose2?)\.main\s*\("
-    r"|-m\s+(?:py\.?test|unittest|nose2)(?![a-z0-9_])"
-)
-_IDENTIFIER = re.compile(r"[a-z0-9_]+")
-_MAX_SCRIPT_REACH_CHARS = 16 * 1024 * 1024
-
-
-def _is_build_control_path(path: str) -> bool:
-    """Files that shape the screened image; CI workflows and lockfiles do not."""
-    normalized = path.casefold().removeprefix("./")
-    parts = normalized.split("/")
-    name = parts[-1]
-    return (
-        not normalized.startswith(".github/")
-        and name not in _LOCKFILES
-        and (
-            _is_build_file(normalized)
-            or name.startswith("dockerfile")
-            or name.endswith(".dockerfile")
-            or (".cargo" in parts[:-1] and name in {"config", "config.toml"})
-        )
-    )
-
-
-def _build_control_text(files: Iterable[tuple[str, str]]) -> str | None:
-    """Casefolded text of the files that control the build.
-
-    Returns None past the size bound, so padding cannot push a directive out
-    of view: callers then skip nothing.
-    """
-    chunks: list[str] = []
-    size = 0
-    for path, text in files:
-        if not _is_build_control_path(path):
-            continue
-        size += len(text)
-        if size > _MAX_BUILD_CONTROL_CHARS:
-            return None
-        chunks.append(text.casefold())
-    return "\n".join(chunks)
-
-
-def _rust_test_items_are_inert(context: list[tuple[str, str]]) -> bool:
-    """Whether no binary the build makes can contain a ``cfg(test)`` item.
-
-    Only an affirmative, bounded, fully visible build qualifies: a custom
-    build script, oversized build text, or any flag, harness, or Cargo
-    configuration source keeps test items scanned.
-    """
-    if any(path.casefold().rsplit("/", 1)[-1] == "build.rs" for path, _ in context):
-        return False
-    build_text = _build_control_text(context)
-    return build_text is not None and _RUST_TEST_BUILD.search(build_text) is None
-
-
-def _is_script_test_module(path: str) -> bool:
-    """A Python test module under the top-level ``scripts/`` tree.
-
-    A miner Dockerfile may copy and run ``scripts/``, so only test-named
-    modules qualify, and fingerprinting still scans one the build can reach.
-    """
-    normalized = path.casefold().removeprefix("./")
-    name = normalized.rsplit("/", 1)[-1]
-    return (
-        normalized.startswith("scripts/")
-        and name.endswith(".py")
-        and (name.startswith("test_") or name.endswith("_test.py"))
-    )
-
-
-def _module_stem(path: str) -> str:
-    """``scripts/test_x.py`` -> ``test_x``, matching file and ``-m`` invocations."""
-    return path.casefold().rsplit("/", 1)[-1].removesuffix(".py")
-
-
-def _is_linkable_script_test(path: str) -> bool:
-    """A ``scripts/`` test module whose name the build could be matched against."""
-    return _is_script_test_module(path) and (
-        _IDENTIFIER.fullmatch(_module_stem(path)) is not None
-    )
-
-
-def _is_script_reach_root(path: str) -> bool:
-    """A build file, or any executable source that is not a linkable test module.
-
-    Non-test ``scripts/`` modules count: a Dockerfile may copy and run the
-    tree, so a script that names a test module can run it.
-    """
-    normalized = path.casefold().removeprefix("./")
-    return _is_build_control_path(normalized) or (
-        _is_executable_source_path(normalized)
-        and not _is_linkable_script_test(normalized)
-    )
-
-
-def can_reach_test_code(path: str) -> bool:
-    """Whether ``path`` can enable Rust test items or run a scripts/ test module.
-
-    Any build file or executable source counts, test modules included, since
-    a reached test module can reach another. If such a member was not read,
-    callers must keep every item fingerprinted.
-    """
-    normalized = path.casefold().removeprefix("./")
-    return _is_build_control_path(normalized) or _is_executable_source_path(normalized)
-
-
-def _unreached_script_tests(
-    files: list[tuple[str, str]], context: list[tuple[str, str]]
-) -> frozenset[str]:
-    """``scripts/`` test modules in ``files`` that nothing runnable can reach.
-
-    Roots are build files and every executable source except linkable test
-    modules. A test module is reached when a root, or a test module already
-    reached, names it as a whole identifier. A root outside ``scripts/`` that
-    names the ``scripts`` tree, any root that runs a test runner, a reached
-    test module that calls a collection API, or a glob that can expand to a
-    test module keeps every module scanned. Test modules that only name each
-    other are not followed: none of them runs unless a root reaches one.
-
-    Only Rust comments are ignored. Oversized context skips nothing. A module
-    invoked through a name computed at run time is out of this text view's
-    reach; L1 and L2 still read every file.
-    """
-    candidates = {
-        _module_stem(path): path for path, _ in files if _is_linkable_script_test(path)
-    }
-    if not candidates:
-        return frozenset()
-    modules: dict[str, list[tuple[str, str]]] = {}
-    pending: list[tuple[str, str, bool]] = []
-    for path, text in context:
-        if _is_linkable_script_test(path):
-            modules.setdefault(_module_stem(path), []).append((path, text))
-        elif _is_script_reach_root(path):
-            pending.append((path, text, False))
-    names: Mapping[str, object] = {**modules, **candidates}
-    reached: set[str] = set()
-    size = 0
-    while pending:
-        path, text, followed = pending.pop()
-        size += len(text)
-        if size > _MAX_SCRIPT_REACH_CHARS:
-            return frozenset()
-        code = _script_reach_view(path, text, names)
-        inside = path.casefold().removeprefix("./").startswith("scripts/")
-        runner = _TEST_COLLECTION_CALL if followed else _TEST_RUNNER
-        if (
-            _SCRIPT_TEST_GLOB.search(code)
-            or runner.search(code)
-            or (not inside and _SCRIPTS_TREE.search(code))
-        ):
-            return frozenset()
-        for stem in _named_stems(code, names) - reached:
-            reached.add(stem)
-            pending.extend(
-                (linked, body, True) for linked, body in modules.get(stem, ())
-            )
-    return frozenset(path for stem, path in candidates.items() if stem not in reached)
-
-
-def _script_reach_view(path: str, text: str, names: Mapping[str, object]) -> str:
-    """Casefolded text to search for reach, with only Rust comments masked.
-
-    The lexer is Rust's: on a Dockerfile, shell, or Python file it would hide
-    real text after ``/*`` or ``//``. Masking only blanks text, so a file
-    with no raw candidate skips the lexer.
-    """
-    code = text.casefold()
-    if path.casefold().endswith(".rs") and (
-        _SCRIPTS_TREE.search(code)
-        or _SCRIPT_TEST_GLOB.search(code)
-        or _TEST_RUNNER.search(code)
-        or _named_stems(code, names)
-    ):
-        code = _mask_comments(text).casefold()
-    return code
-
-
-def _named_stems(text: str, stems: Mapping[str, object]) -> set[str]:
-    """Module stems that ``text`` names as whole identifiers, never substrings."""
-    return {
-        match.group() for match in _IDENTIFIER.finditer(text) if match.group() in stems
-    }
-
-
 def _lead_path_priority(path: str) -> tuple[int, int, str]:
     """Executable and build files before every other file, then path order."""
-    executable = (
-        _is_executable_source_path(path) and not _is_script_test_module(path)
-    ) or _is_build_file(path)
+    executable = _is_executable_source_path(path) or _is_build_file(path)
     return (0 if executable else 1, *_path_priority(path))
 
 
@@ -2657,7 +2394,6 @@ def mask_comments(text: str) -> str:
 
 
 __all__ = [
-    "can_reach_test_code",
     "find_benchmark_emulation_fingerprints",
     "find_decisive_malicious_source",
     "find_source_review_leads",

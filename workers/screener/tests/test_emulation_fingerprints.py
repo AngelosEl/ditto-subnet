@@ -11,17 +11,11 @@ sync/async tell must stay silent on Go, where a real model call blocks.
 from __future__ import annotations
 
 import json
-import re
 from pathlib import Path
 
 import pytest
 
-from ditto_screener.rust_test_items import test_only_item_lines as rust_test_lines
-from ditto_screener.source_signals import (
-    find_benchmark_emulation_fingerprints,
-    mask_comments,
-)
-from scripts.generate_starter_provenance import starter_files
+from ditto_screener.source_signals import find_benchmark_emulation_fingerprints
 
 _RUST_EMULATOR = """\
 // Ported from universe/world.go and the conversational.go generator so we
@@ -1358,362 +1352,96 @@ def test_keep_preference_findings_never_leak_matched_source_text() -> None:
             assert set(location) == {"path", "line", "role"}
 
 
-_STARTER_KIT = Path(__file__).resolve().parents[3] / "miners" / "dittobench-starter-kit"
-
-
-def _comment_masked(text: str, path: str) -> str:
-    # Language-aware masking (#2457) makes the member path a required argument.
-    # Accept both signatures so this test does not depend on merge order.
-    try:
-        return mask_comments(text, path)  # type: ignore[call-arg]
-    except TypeError:
-        return mask_comments(text)
-
-
-_ZERO_TOKEN_REPLY = """\
-pub fn build_reply(question: &str) -> RunResponse {
-    RunResponse {
-        answer: question.to_string(),
-        prompt_tokens: 0,
-        output_tokens: 0,
-    }
-}
-"""
-_TEST_ONLY_REPLY = (
-    "pub fn serve() {}\n\n#[cfg(test)]\nmod tests {\n    use super::*;\n\n"
-    + "".join(f"    {line}\n" for line in _ZERO_TOKEN_REPLY.splitlines())
-    + "}\n"
-)
-_SYNC_ANSWER_SCRIPT = """\
-def answer_case(question):
-    answer = lookup(question)
-    return answer
-"""
-
-
-def test_cfg_test_module_is_not_fingerprinted() -> None:
-    assert (
-        find_benchmark_emulation_fingerprints([("src/reply.rs", _TEST_ONLY_REPLY)])
-        == []
-    )
-    assert "zero-token-answer-constructor" in _kinds(
-        find_benchmark_emulation_fingerprints([("src/reply.rs", _ZERO_TOKEN_REPLY)])
-    )
-
-
-# How the stock kit builds: no flag, harness, or Cargo configuration source.
-# Crate names in the lockfile (rustc-hash, rustc_version) are not directives.
-_PLAIN_RUST_BUILD = [
+# Maintainer counterexample (review of #2567 at 556268ba9): nothing runnable
+# names scripts/ or the module, yet /run serves it through an encoded path.
+RUNTIME_LOADED_TEST_MODULE = [
     (
         "Dockerfile",
-        "FROM rust AS builder\nCOPY Cargo.toml Cargo.lock ./\nCOPY src ./src\n"
-        "RUN cargo build --locked --release --bin serve\n"
-        "RUN cargo clean --locked --release -p serve\n",
+        "FROM python:3.12\n"
+        "COPY . /app\n"
+        "WORKDIR /app\n"
+        "ENV CASE_MODULE_B64=c2NyaXB0cy90ZXN0X3JlaGVhcnNhbC5weQ==\n"
+        'CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8080"]\n',
     ),
-    ("Cargo.toml", '[package]\nname = "serve"\n\n[dev-dependencies]\ntempfile = "3"\n'),
     (
-        "Cargo.lock",
-        '[[package]]\nname = "rustc-hash"\n\n[[package]]\nname = "rustc_version"\n',
+        "app.py",
+        "import base64\n"
+        "import os\n"
+        "import runpy\n"
+        "\n"
+        "loaded = runpy.run_path(\n"
+        '    base64.b64decode(os.environ["CASE_MODULE_B64"]).decode()\n'
+        ")\n"
+        "\n"
+        "\n"
+        "def run(question):\n"
+        '    return loaded["answer_case"](question)\n',
+    ),
+    (
+        "scripts/test_rehearsal.py",
+        "def answer_case(question):\n"
+        "    answer = lookup(question)\n"
+        "    return answer\n",
     ),
 ]
 
 
-def test_plain_release_build_keeps_test_items_skipped() -> None:
-    assert (
-        find_benchmark_emulation_fingerprints(
-            [("src/reply.rs", _TEST_ONLY_REPLY), *_PLAIN_RUST_BUILD]
-        )
-        == []
-    )
+def test_a_test_named_module_loaded_at_run_time_stays_fingerprinted() -> None:
+    # Source text cannot prove a test-named module is never served, so it is
+    # scanned like any other executable source.
+    findings = find_benchmark_emulation_fingerprints(RUNTIME_LOADED_TEST_MODULE)
 
-
-@pytest.mark.parametrize(
-    "build_file",
-    [
-        (".cargo/config.toml", '[build]\nrustflags = ["--cfg", "test"]\n'),
-        ("Dockerfile", 'FROM rust\nENV RUSTFLAGS="--cfg test"\nRUN cargo build\n'),
-        ("build.rs", 'fn main() { println!("cargo:rustc-cfg=test"); }\n'),
-        (
-            "build.rs",
-            'fn main() { println!("cargo:rustc-{}=test", ["c", "fg"].concat()); }\n',
-        ),
-        ("Cargo.toml", '[package]\nname = "serve"\nbuild = "tools/gen.rs"\n'),
-        ("Dockerfile", "FROM rust\nRUN cargo build --release --tests\n"),
-        ("Dockerfile", "FROM rust\nRUN cargo build --release --all-targets\n"),
-        ("Dockerfile", "FROM rust\nRUN cargo bench --no-run\n"),
-        ("Dockerfile", "FROM rust\nRUN cargo t --release --no-run\n"),
-        ("Dockerfile", "FROM rust\nRUN cargo build --profile test\n"),
-        ("Dockerfile", "FROM rust\nRUN cargo rustc --release -- --test\n"),
-        ("Dockerfile", "FROM rust\nRUN cargo build --config ci.toml\n"),
-        (".cargo/config.toml", '[alias]\nserve = "test --release"\n'),
-        ("Dockerfile", "FROM rust\nCOPY cfg /usr/local/cargo/config.toml\n"),
-        ("Dockerfile", "FROM rust\nCOPY cfg /work/.cargo/config.toml\n"),
-        ("Dockerfile", "FROM rust\nENV RUSTC_WRAPPER=/w.py\nRUN cargo build\n"),
-        ("Dockerfile", "FROM rust\nENV CARGO_BUILD_RUSTC=/w.py\nRUN cargo build\n"),
-    ],
-    ids=[
-        "cargo-config-rustflags",
-        "dockerfile-rustflags",
-        "build-script-rustc-cfg",
-        "build-script-computed-directive",
-        "custom-build-script",
-        "harness-tests",
-        "harness-all-targets",
-        "harness-bench",
-        "harness-test-alias",
-        "test-profile",
-        "rustc-test",
-        "config-from-file",
-        "cargo-alias",
-        "cargo-home-config",
-        "nested-cargo-config",
-        "rustc-wrapper",
-        "rustc-substitute",
-    ],
-)
-def test_test_items_stay_fingerprinted_when_the_build_can_enable_cfg_test(
-    build_file: tuple[str, str],
-) -> None:
-    # A test-gated item is inert only while no binary the build makes can
-    # compile cfg(test); anything that could, or that hides flags elsewhere,
-    # keeps the full scan.
-    files = [("src/reply.rs", _TEST_ONLY_REPLY), build_file]
-
-    assert "zero-token-answer-constructor" in _kinds(
-        find_benchmark_emulation_fingerprints(files)
-    )
-    assert find_benchmark_emulation_fingerprints(
-        [("src/reply.rs", _TEST_ONLY_REPLY)], build_context=[build_file]
-    )
-
-
-def test_incomplete_build_context_keeps_every_item_fingerprinted() -> None:
-    # The caller could not read some build file or runnable source (too
-    # large, not UTF-8): it may hold the directive, so nothing is skipped.
-    files = [
-        ("src/reply.rs", _TEST_ONLY_REPLY),
-        ("scripts/test_rehearsal.py", _SYNC_ANSWER_SCRIPT),
-        *_PLAIN_RUST_BUILD,
-    ]
-
-    assert find_benchmark_emulation_fingerprints(files) == []
-    assert {"zero-token-answer-constructor", "sync-answer-constructor"} <= _kinds(
-        find_benchmark_emulation_fingerprints(files, build_context_complete=False)
-    )
-
-
-def test_scripts_test_modules_are_not_fingerprinted() -> None:
-    for path in ("scripts/test_rehearsal.py", "scripts/lab/rehearsal_test.py"):
-        assert (
-            find_benchmark_emulation_fingerprints([(path, _SYNC_ANSWER_SCRIPT)]) == []
-        ), path
-    # Only test modules under the top-level scripts/ tree are exempt, and only
-    # when their name is a plain identifier the build could be matched against.
-    for path in (
-        "scripts/rehearsal.py",
-        "tools/test_rehearsal.py",
-        "test_answer.py",
-        "scripts/test_answer-v2.py",
-    ):
-        assert "sync-answer-constructor" in _kinds(
-            find_benchmark_emulation_fingerprints([(path, _SYNC_ANSWER_SCRIPT)])
-        ), path
-
-
-def test_prose_about_scripts_does_not_reach_a_script_test_module() -> None:
-    # The stock kit names scripts/ only in Rust doc comments and docs; a
-    # comment or a README cannot run a module.
-    files = [
-        ("scripts/test_rehearsal.py", _SYNC_ANSWER_SCRIPT),
-        (
-            "src/lib.rs",
-            "//! Replay with `scripts/test_rehearsal.py --gates`.\npub fn f() {}\n",
-        ),
-        ("README.md", "Run python3 scripts/test_rehearsal.py before pytest.\n"),
-        *_PLAIN_RUST_BUILD,
-    ]
-
-    assert find_benchmark_emulation_fingerprints(files) == []
-
-
-@pytest.mark.parametrize(
-    "runner",
-    [
-        ("Dockerfile", 'FROM python\nCMD ["python", "scripts/test_rehearsal.py"]\n'),
-        ("Dockerfile", 'FROM python\nCMD ["python", "-m", "scripts.test_rehearsal"]\n'),
-        ("entrypoint.sh", "#!/bin/sh\nexec python scripts/test_rehearsal.py\n"),
-        (
-            "Dockerfile",
-            "FROM python\nCOPY scripts /app/tools\nCMD python /app/tools/x\n",
-        ),
-        ("app.py", "from scripts.test_rehearsal import answer_case\n"),
-        ("server/main.py", "import sys\nsys.path.insert(0, 'scripts')\n"),
-        ("src/main.rs", 'fn main() { run("python3", "test_rehearsal.py"); }\n'),
-        ("Dockerfile", "FROM python\nCOPY . .\nRUN python -m pytest -q\n"),
-        ("Dockerfile", 'FROM python\nCOPY . .\nCMD ["python", "-m", "unittest"]\n'),
-        ("run.sh", '#!/bin/sh\nfor f in */test_*.py; do python "$f"; done\n'),
-        ("Dockerfile", "FROM python\nCOPY . .\nRUN python */*.py\n"),
-        (
-            "scripts/main.py",
-            "import test_rehearsal\n\ntest_rehearsal.answer_case('q')\n",
-        ),
-        ("scripts/cli.py", "import subprocess\n\nsubprocess.run(['pytest', '-q'])\n"),
-        (
-            "scripts/cli.py",
-            "import glob\n\nfor path in glob.glob('test_*.py'):\n    run(path)\n",
-        ),
-    ],
-    ids=[
-        "dockerfile-path",
-        "dockerfile-module",
-        "shell-entrypoint",
-        "copied-scripts-tree",
-        "served-import",
-        "served-sys-path",
-        "served-subprocess-by-stem",
-        "pytest-discovery",
-        "unittest-discovery",
-        "shell-test-glob",
-        "dockerfile-py-glob",
-        "non-test-script-import",
-        "non-test-script-runs-pytest",
-        "non-test-script-glob",
-    ],
-)
-def test_scripts_test_module_the_build_can_reach_is_still_fingerprinted(
-    runner: tuple[str, str],
-) -> None:
-    files = [("scripts/test_rehearsal.py", _SYNC_ANSWER_SCRIPT), runner]
-
-    assert "sync-answer-constructor" in _kinds(
-        find_benchmark_emulation_fingerprints(files)
-    )
-
-
-def _fingerprinted_paths(files: list[tuple[str, str]]) -> set[str]:
-    return {
+    assert {
         str(location["path"])
-        for finding in find_benchmark_emulation_fingerprints(files)
+        for finding in findings
+        if finding["kind"] == "sync-answer-constructor"
         for location in finding["locations"]  # type: ignore[attr-defined]
-    }
+    } == {"scripts/test_rehearsal.py"}
 
 
-def test_a_reached_test_module_reaches_the_modules_it_names() -> None:
-    # The served binary runs test_entry.py, which imports test_helpers; both
-    # can run, so a chain through test modules keeps every link scanned.
-    files = [
-        ("src/main.rs", 'fn main() { run("python3", "test_entry.py"); }\n'),
-        ("scripts/test_entry.py", "import test_helpers\n"),
-        ("scripts/test_helpers.py", _SYNC_ANSWER_SCRIPT),
-    ]
+_CFG_TEST_ZERO_TOKEN_REPLY = """\
+pub fn serve() {}
 
-    assert _fingerprinted_paths(files) == {"scripts/test_helpers.py"}
-
-
-def test_unreached_test_modules_that_name_each_other_stay_skipped() -> None:
-    # Neither module runs unless something runnable reaches one of them, so
-    # naming each other keeps neither scanned.
-    files = [
-        ("scripts/test_a.py", "import test_b\n" + _SYNC_ANSWER_SCRIPT),
-        ("scripts/test_b.py", "import test_a\n" + _SYNC_ANSWER_SCRIPT),
-        ("scripts/run.py", "# Usage: python3 scripts/run.py\n"),
-    ]
-
-    assert _fingerprinted_paths(files) == set()
-
-
-def test_a_reached_test_module_collecting_others_keeps_them_scanned() -> None:
-    # Importing unittest for its own cases collects nothing else, but an
-    # explicit discovery call can run every test module.
-    reached = ("src/main.rs", 'fn main() { run("python3", "test_entry.py"); }\n')
-    other = ("scripts/test_other.py", _SYNC_ANSWER_SCRIPT)
-    own_cases = ("scripts/test_entry.py", "import unittest\n\nunittest.main()\n")
-    discovery = (
-        "scripts/test_entry.py",
-        "import unittest\n\nunittest.TestLoader().discover('.')\n",
-    )
-
-    assert _fingerprinted_paths([reached, own_cases, other]) == set()
-    assert _fingerprinted_paths([reached, discovery, other]) == {
-        "scripts/test_other.py"
-    }
-
-
-def test_script_test_stems_match_whole_identifiers_only() -> None:
-    # Naming scripts/test_xml.py (without the scripts/ prefix) reaches that
-    # module, not scripts/test_x.py, whose name is only a substring of it.
-    files = [
-        ("scripts/test_x.py", _SYNC_ANSWER_SCRIPT),
-        ("scripts/test_xml.py", _SYNC_ANSWER_SCRIPT),
-        ("src/main.rs", 'fn main() { run("python3", "test_xml.py"); }\n'),
-    ]
-
-    paths = {
-        str(location["path"])
-        for finding in find_benchmark_emulation_fingerprints(files)
-        for location in finding["locations"]
-    }
-    assert paths == {"scripts/test_xml.py"}
-
-
-def test_oversized_build_context_keeps_every_item_fingerprinted() -> None:
-    # Padding past a scan bound must not hide a cfg(test) directive or a
-    # script invocation: nothing is skipped when a bound is exceeded.
-    rust = [
-        ("src/reply.rs", _TEST_ONLY_REPLY),
-        ("Dockerfile", "#" * (8 * 1024 * 1024 + 1)),
-    ]
-    script = ("scripts/test_rehearsal.py", _SYNC_ANSWER_SCRIPT)
-    padding = ("src/pad.rs", " " * (16 * 1024 * 1024 + 1))
-
-    assert "zero-token-answer-constructor" in _kinds(
-        find_benchmark_emulation_fingerprints(rust)
-    )
-    assert "sync-answer-constructor" in _kinds(
-        find_benchmark_emulation_fingerprints([script], build_context=[script, padding])
-    )
-
-
-def test_raw_starter_kit_fingerprints_skip_test_items_and_script_tests() -> None:
-    if not _STARTER_KIT.is_dir():
-        pytest.skip("the monorepo starter kit is not part of this checkout")
-    files = []
-    for relative in starter_files(_STARTER_KIT):
-        try:
-            files.append((relative, (_STARTER_KIT / relative).read_text()))
-        except UnicodeDecodeError:
-            continue
-    test_lines = {
-        path: rust_test_lines(_comment_masked(text, path).splitlines())
-        for path, text in files
-        if path.endswith(".rs")
-    }
-
-    findings = find_benchmark_emulation_fingerprints(files)
-    unexempted = find_benchmark_emulation_fingerprints(
-        files, build_context_complete=False
-    )
-
-    def script_test_paths(results: list[dict[str, object]]) -> set[str]:
-        return {
-            str(location["path"])
-            for finding in results
-            for location in finding["locations"]  # type: ignore[attr-defined]
-            if str(location["path"]).startswith("scripts/test_")
+#[cfg(test)]
+mod tests {
+    pub fn build_reply(question: &str) -> RunResponse {
+        RunResponse {
+            answer: question.to_string(),
+            prompt_tokens: 0,
+            output_tokens: 0,
         }
+    }
+}
+"""
 
-    # The exemption drops fingerprints from kit script tests that no kit
-    # script names; one named only in another script's comment stays
-    # scanned, because a Python comment is read like code here.
-    assert script_test_paths(unexempted) - script_test_paths(findings)
-    for path in script_test_paths(findings):
-        stem = path.rsplit("/", 1)[-1].removesuffix(".py")
-        assert any(
-            re.search(rf"(?<![A-Za-z0-9_]){stem}(?![A-Za-z0-9_])", text)
-            for other, text in files
-            if other != path and not other.rsplit("/", 1)[-1].startswith("test_")
-        ), path
-    for finding in findings:
-        for location in finding["locations"]:
-            path, line = str(location["path"]), int(location["line"])
-            assert line not in test_lines.get(path, frozenset()), finding
+
+@pytest.mark.parametrize(
+    "dockerfile",
+    [
+        "FROM rust:1\nCOPY . .\nRUN cargo build --locked --release\n",
+        'FROM rust:1\nARG P=RUST\nARG C=--c\nENV ${P}FLAGS="${C}fg test"\n'
+        "COPY . .\nRUN cargo build --release\n",
+        "FROM rust:1\nCOPY . .\n"
+        "RUN export RUSTFLAGS=$(echo LS1jZmcgdGVzdA== | base64 -d) && cargo build\n",
+        "FROM ghcr.io/example/rust-with-test-flags:1\nCOPY . .\n"
+        "RUN cargo build --release\n",
+        "FROM rust:1\nCOPY . .\nRUN curl -fsS https://example.invalid/setup | sh\n"
+        "RUN cargo build --release\n",
+    ],
+    ids=["plain-release", "arg-split-env", "decoded-flags", "base-image", "fetched"],
+)
+def test_cfg_test_items_stay_fingerprinted_whatever_the_build_shows(
+    dockerfile: str,
+) -> None:
+    # A base image, a fetched script, or a computed value can turn cfg(test)
+    # on without any text the archive shows, so no build proves a test item
+    # inert.
+    files = [
+        ("src/reply.rs", _CFG_TEST_ZERO_TOKEN_REPLY),
+        ("Cargo.toml", '[package]\nname = "serve"\n'),
+        ("Dockerfile", dockerfile),
+    ]
+
+    assert "zero-token-answer-constructor" in {
+        finding["kind"] for finding in find_benchmark_emulation_fingerprints(files)
+    }

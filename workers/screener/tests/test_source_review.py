@@ -4544,97 +4544,52 @@ def test_review_leads_keep_every_lead_of_a_modified_starter_fixture(
     assert leads["items"] == expected
 
 
-_TEST_GATED_ZERO_TOKEN_REPLY = (
-    b"pub fn serve() {}\n\n#[cfg(test)]\nmod tests {\n"
-    b"    pub fn build_reply(question: &str) -> RunResponse {\n"
-    b"        RunResponse {\n"
-    b"            answer: question.to_string(),\n"
-    b"            prompt_tokens: 0,\n"
-    b"            output_tokens: 0,\n"
-    b"        }\n"
-    b"    }\n"
-    b"}\n"
-)
-
-
-@pytest.mark.parametrize(
-    "hidden",
-    [
-        b'[build]\nrustflags = ["--cfg", "test"]\n' + b"#" * (2 * 1024 * 1024),
-        b'\xff\n[build]\nrustflags = ["--cfg", "test"]\n',
-    ],
-    ids=["oversized", "undecodable"],
-)
-def test_review_leads_keep_test_items_when_a_build_file_is_unread(
-    tmp_path: Path, hidden: bytes
-) -> None:
-    files = {
-        "Cargo.toml": b'[package]\nname = "serve"\n',
-        "src/lib.rs": _TEST_GATED_ZERO_TOKEN_REPLY,
-    }
-    plain = TarSourceRepository(str(_archive_files(tmp_path, files))).review_leads(
-        (_untrusting_manifest(tmp_path),)
-    )
-    hidden_dir = tmp_path / "hidden"
-    hidden_dir.mkdir()
-
-    # A build file the lead scan cannot read may turn cfg(test) on, so the
-    # test-item exemption is off rather than trusting what it could not see.
-    leads = TarSourceRepository(
-        str(_archive_files(hidden_dir, {**files, ".cargo/config.toml": hidden}))
-    ).review_leads((_untrusting_manifest(tmp_path),))
-
-    assert plain["emulation_fingerprints"] == []
-    assert "zero-token-answer-constructor" in {
-        finding["kind"] for finding in leads["emulation_fingerprints"]
-    }
-
-
-def test_review_leads_keep_script_tests_when_a_script_is_unread(
+def test_review_leads_fingerprint_a_test_named_module_loaded_at_run_time(
     tmp_path: Path,
 ) -> None:
-    answer = (
-        b"def answer_case(question):\n"
-        b"    answer = lookup(question)\n"
-        b"    return answer\n"
-    )
-    files = {"scripts/test_rehearsal.py": answer}
-    plain = TarSourceRepository(str(_archive_files(tmp_path, files))).review_leads(
-        (_untrusting_manifest(tmp_path),)
-    )
-    hidden_dir = tmp_path / "hidden"
-    hidden_dir.mkdir()
+    from tests.test_emulation_fingerprints import RUNTIME_LOADED_TEST_MODULE
 
-    # An oversized script may import the test module, so the scripts/ test
-    # exemption is off rather than trusting what the lead scan could not read.
-    padding = b"#" * (2 * 1024 * 1024)
+    # Maintainer counterexample on #2567: app.py serves scripts/ through a
+    # base64-encoded runpy path, so the inventory keeps its fingerprint.
     leads = TarSourceRepository(
         str(
             _archive_files(
-                hidden_dir,
-                {**files, "scripts/main.py": b"import test_rehearsal\n" + padding},
+                tmp_path,
+                {path: text.encode() for path, text in RUNTIME_LOADED_TEST_MODULE},
             )
         )
     ).review_leads((_untrusting_manifest(tmp_path),))
 
-    assert plain["emulation_fingerprints"] == []
-    assert "sync-answer-constructor" in {
-        finding["kind"] for finding in leads["emulation_fingerprints"]
+    assert "scripts/test_rehearsal.py" in {
+        str(location["path"])
+        for finding in leads["emulation_fingerprints"]
+        if finding["kind"] == "sync-answer-constructor"
+        for location in finding["locations"]
     }
 
 
-def test_review_leads_not_starved_by_non_source_noise(tmp_path: Path) -> None:
-    files = _current_starter_kit_sources()
+@pytest.mark.parametrize("path", ["server/answer.py", "scripts/test_answer.py"])
+def test_review_leads_not_starved_by_non_source_noise(
+    tmp_path: Path, path: str
+) -> None:
+    # The kit's scripts/ are executable source and compete for the cap on
+    # equal terms; the noise here is docs, fixtures, HTML and build files.
+    files = {
+        name: raw
+        for name, raw in _current_starter_kit_sources().items()
+        if not name.startswith("scripts/")
+    }
     miner = (
         b"def route(question, memories):\n"
         b'    if contains(question, "canary"):\n'
         b"        memories.inject(question)\n"
         b"    return memories\n"
     )
-    archive = _archive_files(tmp_path, {**files, "server/answer.py": miner})
+    archive = _archive_files(tmp_path, {**files, path: miner})
 
     # With no starter trust, docs, fixtures, HTML and lockfiles alone would
-    # fill the lead cap before an executable file sorted after them.
+    # fill the lead cap before an executable file sorted after them. A
+    # test-named module is executable source too: nothing proves it unserved.
     leads = TarSourceRepository(str(archive)).review_leads(
         (_untrusting_manifest(tmp_path),)
     )
@@ -4642,9 +4597,9 @@ def test_review_leads_not_starved_by_non_source_noise(tmp_path: Path) -> None:
     assert {
         "kind": "challenge-shaped-retrieval-override",
         "locations": [
-            {"path": "server/answer.py", "line": 2, "role": "challenge-shape"},
-            {"path": "server/answer.py", "line": 2, "role": "input-recognition"},
-            {"path": "server/answer.py", "line": 3, "role": "retrieval-override"},
+            {"path": path, "line": 2, "role": "challenge-shape"},
+            {"path": path, "line": 2, "role": "input-recognition"},
+            {"path": path, "line": 3, "role": "retrieval-override"},
         ],
     } in leads["items"]
 

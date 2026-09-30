@@ -610,25 +610,13 @@ bytes. A file whose exact path and sha256 appear in a runtime starter manifest
 `trusted_starter_skipped`; a staged manifest grants nothing, and one changed
 byte keeps all of a file's leads. Reachability, static-v2 advisories, category
 guards, generator mirroring, and review-adaptation analysis still read every
-file. Executable and build files fill the lead cap before docs, data fixtures,
-and `scripts/` test modules, which keep their leads in whatever capacity
-remains.
-
-Fingerprints skip Rust test-only items only while no binary the build makes can
-compile `cfg(test)`: any `--cfg`, `rustflags`, build script, harness build
-(`cargo test`, `bench`, `--tests`, `--all-targets`, a test profile), Cargo
-alias, `--config`, `.cargo` or `CARGO_HOME` configuration, or `rustc` wrapper
-keeps them scanned. They skip a `scripts/` test module only while nothing
-runnable reaches it. Build files and every other executable source, non-test
-`scripts/` modules included, are roots. A root reaches a module by naming it as
-a whole identifier, and a reached test module reaches the modules it names.
-Any root running a test runner, a reached module calling a collection API, a
-glob that can expand to a test module, or a root outside `scripts/` naming the
-`scripts` tree keeps every module scanned. Test modules that only name each
-other stay skipped, since none runs unless a root reaches one. Only Rust
-comments are ignored. Oversized context, or a build file or executable source
-the lead scan could not read, keeps everything scanned. A name computed at run
-time is out of reach of this text check, so L1 and L2 still read every file.
+file. Executable and build files fill the lead cap before docs and data
+fixtures, which keep their leads in whatever capacity remains. Test-named
+modules count as executable source, and apart from the two keep-preference
+fingerprints that already skip them, fingerprints still scan Rust test-only
+items. Source text cannot prove either unserved: a runtime-loaded path, a base
+image, or a computed build value can serve them without any text the archive
+shows.
 
 The following are insufficient on their own:
 

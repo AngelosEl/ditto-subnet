@@ -46,7 +46,6 @@ from ditto_screener.review_provider import (
 from ditto_screener.source_causality import analyze_static_candidates_v2
 from ditto_screener.source_reachability import ReachabilityState, analyze_reachability
 from ditto_screener.source_signals import (
-    can_reach_test_code,
     find_benchmark_emulation_fingerprints,
     find_decisive_malicious_source,
     find_source_review_leads,
@@ -2742,10 +2741,9 @@ class TarSourceRepository:
         miner wrote. A file whose exact path and sha256 ship in a runtime
         starter manifest was not, so it stays out of those two scans; a staged
         manifest grants nothing, and one changed byte breaks the match and
-        keeps every lead. Reachability,
-        static-v2 advisories, and the other whole-program analyses still read
-        every file, because a miner-authored chain can run through an
-        unmodified starter file.
+        keeps every lead. Reachability, static-v2 advisories, and the other
+        whole-program analyses still read every file, because a miner-authored
+        chain can run through an unmodified starter file.
         """
         trusted_digests = _trusted_starter_digests(
             provenance_manifest_paths or self._provenance_manifest_paths
@@ -2814,23 +2812,12 @@ class TarSourceRepository:
                 }
                 for item in static_v2.advisory[:16]
             ]
-        # The test-item and scripts/ test exemptions need every build file
-        # and runnable source in view: an oversized, undecodable, or unscanned
-        # one could enable cfg(test) or run a test module unseen.
-        read_names = {name for name, _text in readable}
-        build_context_complete = not any(
-            can_reach_test_code(name)
-            for name in self._members
-            if name not in read_names
-        )
         return {
             "items": [*find_source_review_leads(miner_readable), *static_advisories][
                 :_MAX_LEAD_SCAN_FILES
             ],
             "emulation_fingerprints": find_benchmark_emulation_fingerprints(
-                miner_readable,
-                build_context=readable,
-                build_context_complete=build_context_complete,
+                miner_readable
             ),
             "unmatchable_category_guards": guard_report(
                 find_unmatchable_category_guards(
