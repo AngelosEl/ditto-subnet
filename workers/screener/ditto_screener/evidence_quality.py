@@ -18,6 +18,10 @@ only what may be *cited as proof*, which is why it cannot be used to smuggle a
 violation: a violation that executes is, by construction, on a line that is not
 inert.
 
+The declaration, attribute, and ``#[cfg(test)]`` rules are Rust syntax and
+apply only to Rust sources; in another language the same text (``mod = os;``
+in Python, ``'#[test]'`` in a JavaScript string) is ordinary code.
+
 Two exemptions keep the filter from eating load-bearing evidence:
 
 - ``#[cfg(...)]`` / ``#[cfg_attr(...)]`` attributes stay admissible. They are the
@@ -33,7 +37,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from ditto_screener.rust_test_items import is_rust_test_only_attribute
+from ditto_screener.rust_test_items import test_only_item_lines
+from ditto_screener.source_masking import language_for_path
 from ditto_screener.source_signals import mask_comments
 
 # ``use``/``extern crate`` bring a name into scope; ``mod`` declares one. None of
@@ -59,46 +64,23 @@ class Admissibility:
 ADMISSIBLE = Admissibility(True)
 
 
-def _inert_reason(code_line: str, raw_line: str) -> str:
+def _inert_reason(code_line: str, raw_line: str, *, rust: bool) -> str:
     """Name why a line cannot carry a behaviour, or return ``""``."""
     # ``code_line`` is the comment-masked view. When it is blank but the raw
     # line is not, everything on the line was prose.
     if not code_line.strip():
         return "comment-or-blank" if raw_line.strip() else "blank"
-    if _ATTRIBUTE_ONLY.match(code_line) and not _REACHABILITY_ATTRIBUTE.search(
-        code_line
+    if (
+        rust
+        and _ATTRIBUTE_ONLY.match(code_line)
+        and not _REACHABILITY_ATTRIBUTE.search(code_line)
     ):
         return "attribute-only"
-    if _DECLARATION_ONLY.match(code_line):
+    if rust and _DECLARATION_ONLY.match(code_line):
         return "declaration-only"
     if _CLOSING_ONLY.match(code_line):
         return "delimiter-only"
     return ""
-
-
-def _test_only_lines(code_lines: list[str]) -> set[int]:
-    """1-based line numbers inside a ``#[cfg(test)]`` item.
-
-    Brace matching runs over the comment-masked text so a brace inside a
-    comment cannot open or close a region. Only an attribute that affirmatively
-    requires ``test`` counts; production branches such as ``#[cfg(not(test))]``
-    remain citable.
-    """
-    marked: set[int] = set()
-    for index, line in enumerate(code_lines):
-        if not is_rust_test_only_attribute(line):
-            continue
-        depth = 0
-        opened = False
-        for cursor in range(index, len(code_lines)):
-            depth += code_lines[cursor].count("{")
-            depth -= code_lines[cursor].count("}")
-            marked.add(cursor + 1)
-            if code_lines[cursor].count("{"):
-                opened = True
-            if opened and depth <= 0:
-                break
-    return marked
 
 
 def citation_admissibility(
@@ -114,6 +96,12 @@ def citation_admissibility(
     member is opaque. An opaque member keeps its citation: the path is proven
     and the line is unverifiable by design, so refusing it would invent a
     false negative.
+
+    A ``#[cfg(test)]`` item is found as the static detectors find it
+    (``rust_test_items``): brace matching over comment- and literal-masked
+    text, a braceless item ending at its ``;``, and an uncertain boundary left
+    citable. Only an attribute that affirmatively requires ``test`` counts;
+    production branches such as ``#[cfg(not(test))]`` remain citable.
 
     ``runtime_paths`` are members the build or served code explicitly makes
     executable (a Cargo target, ``include!``/``#[path]``, a script the
@@ -131,10 +119,11 @@ def citation_admissibility(
         return ADMISSIBLE
     code_lines = mask_comments(text, normalized).splitlines()
     code_lines.extend([""] * (len(raw_lines) - len(code_lines)))
-    reason = _inert_reason(code_lines[line - 1], raw_lines[line - 1])
+    rust = language_for_path(normalized) == "rust"
+    reason = _inert_reason(code_lines[line - 1], raw_lines[line - 1], rust=rust)
     if reason:
         return Admissibility(False, reason)
-    if line in _test_only_lines(code_lines):
+    if rust and line in test_only_item_lines(code_lines):
         return Admissibility(False, "cfg-test-only")
     return ADMISSIBLE
 

@@ -6356,3 +6356,36 @@ def test_runtime_script_under_tests_dir_keeps_its_citation(tmp_path: Path) -> No
     assert [item["line"] for item in served.finding["evidence"]] == [3]
     assert unreferenced.risk_level == "low"
     assert unreferenced.categories == ("none",)
+
+
+def test_served_rust_after_a_braceless_cfg_test_module_stays_high(
+    tmp_path: Path,
+) -> None:
+    """``#[cfg(test)] mod tests;`` gates only that declaration.
+
+    The admissibility scan kept counting braces past its ``;``, so the served
+    function below was "cfg-test-only", every citation was dropped, and the
+    finding was demoted to low with its BREACH rewritten.
+    """
+    library = (
+        "#[cfg(test)]\n"
+        "mod tests;\n"
+        "\n"
+        "pub fn answer(case_id: &str) -> String {\n"
+        '    std::fs::read_to_string("/root/expected_answers.json").unwrap()\n'
+        "}\n"
+    )
+    repo = TarSourceRepository(
+        str(_archive_files(tmp_path, {"src/lib.rs": library.encode()}))
+    )
+
+    observation = source_review_module._parse_review(
+        _high_risk_review("src/lib.rs", (4, 5)),
+        artifact_sha256=_SHA,
+        repository=repo,
+    )
+
+    assert observation.risk_level == "high"
+    assert observation.categories == ("benchmark_emulation",)
+    decision = _production_engine_decision(observation)
+    assert decision["disposition"] == SourceReviewInvariantDisposition.BREACH.value
