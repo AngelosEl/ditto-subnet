@@ -1010,7 +1010,7 @@ def _lex_shell(text: str) -> bytearray | None:
             else:
                 word = _SH_HEREDOC_WORD.match(text, end)
                 if word is not None:
-                    delimiter = re.sub(r"['\"\\]", "", word.group(1))
+                    delimiter = _sh_unquote(word.group(1))
                     if delimiter:
                         heredocs.append((delimiter, value == "<<-"))
                     end = word.end()
@@ -1019,6 +1019,49 @@ def _lex_shell(text: str) -> bytearray | None:
             heredocs.clear()
         index = end
     return kinds if len(frames) == 1 else None
+
+
+def _sh_unquote(word: str) -> str:
+    """Remove shell quoting from a here-document delimiter word, as bash does.
+
+    A backslash inside single quotes stays literal (``<<'a\\b'`` ends at
+    ``a\\b``); an unquoted backslash quotes the next character, and a double
+    quote unescapes only ``$`` ``` ` ``` ``"`` and ``\\``. Stripping every
+    backslash (as a plain quote-removal would) shortens the delimiter and can
+    end the body early, blanking script the shell runs verbatim.
+    """
+    out: list[str] = []
+    index = 0
+    while index < len(word):
+        char = word[index]
+        if char == "\\":
+            if index + 1 < len(word):
+                out.append(word[index + 1])
+            index += 2
+        elif char == "'":
+            close = word.find("'", index + 1)
+            close = len(word) if close < 0 else close
+            out.append(word[index + 1 : close])
+            index = close + 1
+        elif char == '"':
+            index += 1
+            while index < len(word) and word[index] != '"':
+                if word[index] == "\\" and word[index + 1 : index + 2] in {
+                    "$",
+                    "`",
+                    '"',
+                    "\\",
+                }:
+                    out.append(word[index + 1])
+                    index += 2
+                else:
+                    out.append(word[index])
+                    index += 1
+            index += 1
+        else:
+            out.append(char)
+            index += 1
+    return "".join(out)
 
 
 def _sh_in_subscript(text: str, index: int) -> bool:

@@ -513,6 +513,28 @@ def test_shell_shift_is_not_a_here_document(head: str, delimiter: str) -> None:
     assert "; hidden" in mask_comments(source, "scripts/run.sh")
 
 
+# bash keeps a backslash that sits inside quotes when it removes quoting from a
+# here-document delimiter, so ``<<'a\b'`` ends at ``a\b``, not ``ab``. Stripping
+# every backslash shortened the delimiter; a body line equal to the shortened
+# form then ended the body early and the script bash still feeds the here-
+# document (verbatim) was blanked as a comment.
+@pytest.mark.parametrize(
+    ("opener", "short"),
+    [
+        pytest.param(r"<<'a\b'", "ab", id="single-quoted-backslash"),
+        pytest.param(r'<<"a\b"', "ab", id="double-quoted-backslash"),
+        pytest.param(r'<<"a\\b"', "ab", id="double-quoted-escaped-backslash"),
+    ],
+)
+def test_shell_here_document_delimiter_keeps_quoted_backslash(
+    opener: str, short: str
+) -> None:
+    delimiter = opener.removeprefix("<<").strip("'\"").replace("\\\\", "\\")
+    source = f"sh {opener}\n{short}\n: # $(cat /root/.ssh/id_rsa)\n{delimiter}\n"
+
+    assert "# $(cat /root/.ssh/id_rsa)" in mask_comments(source, "scripts/run.sh")
+
+
 def test_a_case_argument_cannot_hold_a_command_substitution_open() -> None:
     """``echo case`` is an argument; bash closes ``$(`` at the first ``)``.
 
