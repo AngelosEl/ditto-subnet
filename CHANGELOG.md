@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.330.14 (2026-09-30)
+
+### Bug Fixes
+
+- **screener**: Steer repeated L1 concern notes to new evidence
+  ([#2585](https://github.com/ditto-assistant/ditto-subnet/pull/2585),
+  [`e3417ee`](https://github.com/ditto-assistant/ditto-subnet/commit/e3417eec9c8d2f46454a8697b69f03839d63142b))
+
+
 ## v0.330.13 (2026-09-30)
 
 ### Bug Fixes
