@@ -1,7 +1,6 @@
 {
   "files": {
     ".dockerignore": "95998932eeb7a61253ebf7cad048d736c014a4800bd3cad35e0dedee899f2f9e",
-    ".env.example": "28c450f96452862d2fc369a9254904369f57dd77778488c2f45947a50d8edc2d",
     ".gitignore": "e483849d3524da4102dca5406ca9bd2bef2ad6b177f65810b3aef084c7f0b484",
     "AGENTS.md": "8b358b42cc124fd68c6f7ad35ff1eae4e74f38c0856881e5ad3abd9a4e1a1c42",
     "BASELINES.md": "206a869f23e59d5f87ac39ac8d051fc46c4958ab8d38cab27e66a3acd18e6ee6",

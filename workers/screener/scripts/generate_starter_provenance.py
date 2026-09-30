@@ -1,15 +1,24 @@
 #!/usr/bin/env python3
-"""Generate a trusted starter-kit provenance manifest from the monorepo kit.
+"""Generate a staged starter-kit provenance manifest from the monorepo kit.
 
-Source review trusts a submitted file only when its exact path and SHA-256
-appear in one of ``ditto_screener/data/starter-kit-provenance-v<N>.json``.
-After a ``miners/dittobench-starter-kit`` change is committed, add the next
-manifest from the repository root (``regenerate_command`` prints the exact
-line) and commit it with the kit change. Never edit or delete a published
-manifest: older honest derivatives must keep matching exactly.
+Source review exempts a submitted file from parts of its scrutiny only on an
+exact path and SHA-256 match against a runtime manifest,
+``ditto_screener/data/starter-kit-provenance-v<N>.json``. The static preflight,
+the L1 provenance block, and the L2 analyzer image all load that set, so adding
+a manifest to it is an admission-relevant trust expansion.
 
-``tests/test_starter_provenance_current.py`` fails until the newest manifest
-equals the kit's tracked, submittable regular files.
+This script therefore never writes into the runtime set. After a
+``miners/dittobench-starter-kit`` change is committed, stage the next manifest
+in ``workers/screener/staged-starter-provenance/`` (``regenerate_command``
+prints the exact line) and commit it with the kit change. No runtime path reads
+the staged directory, and neither screener image contains it. A staged manifest
+is trusted only after a separate, reviewed activation change moves it, unrenamed,
+into ``ditto_screener/data/`` (see the screener README).
+
+Never edit or delete a published manifest: older honest derivatives must keep
+matching exactly. ``tests/test_starter_provenance_current.py`` fails until the
+newest manifest, staged or active, equals the kit's tracked, submittable
+regular files.
 """
 
 from __future__ import annotations
@@ -28,7 +37,13 @@ ORIGIN = "ditto-assistant/ditto-subnet/miners/dittobench-starter-kit"
 MANIFEST_VERSION = 1
 MANIFEST_GLOB = "starter-kit-provenance-v*.json"
 STARTER_DIR = "miners/dittobench-starter-kit"
-MANIFEST_DIR = "workers/screener/ditto_screener/data"
+RUNTIME_MANIFEST_DIR = "workers/screener/ditto_screener/data"
+STAGED_MANIFEST_DIR = "workers/screener/staged-starter-provenance"
+_SCREENER_ROOT = Path(__file__).resolve().parents[1]
+# Loaded by every runtime trust consumer; this script never writes here.
+RUNTIME_MANIFESTS = _SCREENER_ROOT / "ditto_screener" / "data"
+# Outside the ``ditto_screener`` package, so no image or runtime glob sees it.
+STAGED_MANIFESTS = _SCREENER_ROOT / "staged-starter-provenance"
 
 _MANIFEST_NAME = re.compile(r"starter-kit-provenance-v([1-9][0-9]*)\.json")
 # Git index modes for regular files. Symlinks (120000) and submodules (160000)
@@ -36,21 +51,18 @@ _MANIFEST_NAME = re.compile(r"starter-kit-provenance-v([1-9][0-9]*)\.json")
 # outside the kit, and a submission never carries them as regular files.
 _REGULAR_FILE_MODES = frozenset({"100644", "100755"})
 # Mirror the starter ``submit`` archive excludes (#2395) exactly, so a manifest
-# never trusts local state, secrets, build output, or development skills that
-# an honest submission does not contain, and never drops a file it does
-# contain (``*.tar`` is packaged, so it stays). Like ``tar --exclude``, every
-# path component is checked.
+# never trusts a file an honest submission does not contain, and never drops a
+# file it does contain (``*.tar`` is packaged, so it stays). ``.env.*`` also
+# drops the committed ``.env.example`` template: ``submit`` never packages it.
+# Like ``tar --exclude``, every path component is checked.
 _EXCLUDED_COMPONENTS = frozenset({".agents", ".claude", ".git", "target"})
 _EXCLUDED_PATTERNS = (".env", ".env.*", "*.db", "*.db-*", "*.tgz")
-_COMMITTED_TEMPLATES = frozenset({".env.example"})
 
 
 def is_submittable(relative: str) -> bool:
     """Return whether a kit-relative path can appear in an honest submission."""
     for part in PurePosixPath(relative).parts:
-        if part in _EXCLUDED_COMPONENTS:
-            return False
-        if part not in _COMMITTED_TEMPLATES and any(
+        if part in _EXCLUDED_COMPONENTS or any(
             fnmatch.fnmatchcase(part, pattern) for pattern in _EXCLUDED_PATTERNS
         ):
             return False
@@ -142,11 +154,23 @@ def manifest_number(path: Path) -> int:
     return int(match.group(1))
 
 
-def newest_manifest(directory: Path) -> Path:
-    """Return the highest-numbered manifest; numeric, so v10 follows v9."""
-    manifests = sorted(directory.glob(MANIFEST_GLOB), key=manifest_number)
+def manifests_in(*directories: Path) -> list[Path]:
+    """Every manifest in ``directories``, ordered by version number."""
+    return sorted(
+        (path for directory in directories for path in directory.glob(MANIFEST_GLOB)),
+        key=manifest_number,
+    )
+
+
+def newest_manifest(*directories: Path) -> Path:
+    """Return the highest-numbered manifest; numeric, so v10 follows v9.
+
+    Staged and runtime manifests share one version sequence, because
+    activation moves a staged file into the runtime set without renaming it.
+    """
+    manifests = manifests_in(*directories)
     if not manifests:
-        raise FileNotFoundError(f"no starter provenance manifest in {directory}")
+        raise FileNotFoundError("no starter provenance manifest found")
     return manifests[-1]
 
 
@@ -154,8 +178,29 @@ def regenerate_command(version: int) -> str:
     return (
         "python workers/screener/scripts/generate_starter_provenance.py "
         f"--starter-dir {STARTER_DIR} "
-        f"--output {MANIFEST_DIR}/starter-kit-provenance-v{version}.json"
+        f"--output {STAGED_MANIFEST_DIR}/starter-kit-provenance-v{version}.json"
     )
+
+
+def runtime_write_refusal(output: Path) -> str | None:
+    """Why ``output`` must not be written, or None when staging it is safe.
+
+    The generator only stages. Writing into the runtime set, or reusing an
+    active version number, would expand trust without the activation review.
+    """
+    runtime = RUNTIME_MANIFESTS.resolve()
+    if output.resolve().parent == runtime:
+        return (
+            f"refusing to write {output}: {RUNTIME_MANIFEST_DIR} is the "
+            f"runtime-loaded trust set. Stage the manifest in {STAGED_MANIFEST_DIR} "
+            "and activate it in a separate reviewed change."
+        )
+    if _MANIFEST_NAME.fullmatch(output.name) and (runtime / output.name).exists():
+        return (
+            f"refusing to write {output}: {output.name} is already an active "
+            "manifest; write the next manifest version"
+        )
+    return None
 
 
 def manifest_drift(
@@ -181,6 +226,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--starter-dir", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args(argv)
+    refusal = runtime_write_refusal(args.output)
+    if refusal is not None:
+        print(refusal, file=sys.stderr)
+        return 1
     rendered = render_manifest(build_manifest(args.starter_dir.resolve()))
     if args.output.exists() and args.output.read_text() != rendered:
         # A published manifest is an append-only trust anchor for older

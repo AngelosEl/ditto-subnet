@@ -2427,7 +2427,6 @@ class TarSourceRepository:
         self._static_preflight_v2_mode = static_preflight_v2_mode
         self._provenance_manifest_paths = provenance_manifest_paths
         self._binary_analysis_cache: dict[str, dict[str, object]] = {}
-        self._member_digest_cache: dict[str, str] = {}
         members: list[_Member] = []
         seen: set[str] = set()
         with tarfile.open(archive_path, mode="r:gz") as archive:
@@ -3422,12 +3421,6 @@ class TarSourceRepository:
             return None
 
     def _member_sha256(self, path: str) -> str:
-        # Every supported starter manifest re-reads the same members, and each
-        # gzip read rescans the archive. The verified archive is immutable, so
-        # one digest per member keeps exact provenance linear in its size.
-        cached = self._member_digest_cache.get(path)
-        if cached is not None:
-            return cached
         member_info = self._members[path]
         digest = hashlib.sha256()
         with tarfile.open(self._archive_path, mode="r:gz") as archive:
@@ -3437,9 +3430,7 @@ class TarSourceRepository:
                 raise ValueError("provenance file could not be read")
             while chunk := extracted.read(1024 * 1024):
                 digest.update(chunk)
-        value = digest.hexdigest()
-        self._member_digest_cache[path] = value
-        return value
+        return digest.hexdigest()
 
     def member_sha256(self, path: str) -> str:
         """Return the digest of one validated regular archive member."""

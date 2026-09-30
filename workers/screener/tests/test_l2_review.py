@@ -87,9 +87,12 @@ from ditto_screening_protocol import (
     SourceReviewInvariantDisposition,
 )
 from scripts.generate_starter_provenance import (
-    ORIGIN as MONOREPO_STARTER_ORIGIN,
+    RUNTIME_MANIFESTS,
+    STAGED_MANIFESTS,
+    manifests_in,
+    newest_manifest,
+    starter_files,
 )
-from scripts.generate_starter_provenance import newest_manifest, starter_files
 
 SYSTEM_PROMPT = _l2_review_system_prompt(SCREENING_POLICY_VERSION)
 
@@ -226,25 +229,16 @@ def test_supported_starter_manifests_are_versioned_and_distinct() -> None:
             111,
         ),
     }
+    # Runtime trust changes only by an explicit activation change: a staged
+    # manifest joins this set by moving into data/ together with this pin.
+    assert sorted(manifests) == sorted(legacy)
     for name, (revision, file_count, function_count) in legacy.items():
-        manifest = manifests.pop(name)
+        manifest = manifests[name]
         assert manifest["version"] == 2
         assert manifest["origin"] == "ditto-assistant/dittobench-starter-kit"
         assert manifest["revision"] == revision
         assert len(manifest["files"]) == file_count
         assert len(manifest["rust_functions"]) == function_count
-    # Every later manifest is generated from the monorepo kit, which carries
-    # no per-function hashes because no runtime consumer reads them.
-    assert "starter-kit-provenance-v6.json" in manifests
-    for manifest in manifests.values():
-        assert manifest["version"] == 1
-        assert "rust_functions" not in manifest
-        assert manifest["origin"] == MONOREPO_STARTER_ORIGIN
-        assert re.fullmatch(r"[0-9a-f]{40}", manifest["revision"])
-    revisions = [
-        json.loads(path.read_text())["revision"] for path in L2_STARTER_MANIFESTS
-    ]
-    assert len(revisions) == len(set(revisions))
 
 
 def test_starter_provenance_generator_ignores_untracked_build_outputs(
@@ -2701,23 +2695,47 @@ async def test_inprocess_starter_diff_ignores_non_provenance_json(
     assert isinstance(payload["removed"], list)
 
 
-async def test_inprocess_starter_diff_matches_current_kit_to_newest_manifest(
+async def test_inprocess_starter_diff_reads_only_runtime_manifests(
     tmp_path: Path,
 ) -> None:
     if not STARTER_KIT.is_dir():
         pytest.skip("the monorepo starter kit is not part of this checkout")
+    staged = manifests_in(STAGED_MANIFESTS)
+    if not staged:
+        pytest.skip("no starter provenance manifest is staged")
     workspace = tmp_path / "starter"
-    files = _stage_starter_kit(STARTER_KIT, workspace)
-    newest = json.loads(newest_manifest(ROOT / "ditto_screener" / "data").read_text())
+    _stage_starter_kit(STARTER_KIT, workspace)
+    harness = InProcessAnalyzerHarness()
 
-    payload = json.loads(
-        await InProcessAnalyzerHarness().run(workspace, "starter_diff", {})
+    payload = json.loads(await harness.run(workspace, "starter_diff", {}))
+
+    # A staged manifest that equals this kit must not make it diff clean
+    # before activation: the analyzer ranks only the runtime-loaded set.
+    runtime_revisions = {
+        json.loads(path.read_text())["revision"] for path in L2_STARTER_MANIFESTS
+    }
+    staged_revisions = {json.loads(path.read_text())["revision"] for path in staged}
+    assert "error" not in payload, payload
+    assert {item["revision"] for item in payload["candidates"]} == runtime_revisions
+    assert payload["revision"] not in staged_revisions
+
+    # Installing the staged manifests beside the runtime set, as activation
+    # does, selects the newest one with no change.
+    activated = tmp_path / "activated"
+    activated.mkdir()
+    for path in (*L2_STARTER_MANIFESTS, *staged):
+        shutil.copyfile(path, activated / path.name)
+    harness._manifests = activated
+    newest = json.loads(
+        newest_manifest(RUNTIME_MANIFESTS, STAGED_MANIFESTS).read_text()
     )
+
+    payload = json.loads(await harness.run(workspace, "starter_diff", {}))
 
     assert "error" not in payload, payload
     assert payload["revision"] == newest["revision"]
     assert payload["origin"] == newest["origin"]
-    assert payload["unchanged"] == sorted(files) == sorted(newest["files"])
+    assert payload["unchanged"] == sorted(newest["files"])
     assert payload["modified"] == []
     assert payload["added"] == []
     assert payload["removed"] == []
@@ -7071,7 +7089,7 @@ async def test_search_keeps_unproven_large_file_incomplete(
 
 
 @pytest.mark.integration
-async def test_real_analyzer_container_isolated_and_canonical_starter_clean(
+async def test_real_analyzer_container_isolated_and_diffs_only_runtime_manifests(
     tmp_path: Path,
 ) -> None:
     starter_raw = os.environ.get("DITTO_STARTER_KIT_DIR")
@@ -7097,13 +7115,18 @@ async def test_real_analyzer_container_isolated_and_canonical_starter_clean(
     # is build output, never a miner-added file.
     staged = tmp_path / "canonical-starter"
     _stage_starter_kit(starter, staged)
-    newest = json.loads(newest_manifest(ROOT / "ditto_screener" / "data").read_text())
     diff = json.loads(await harness.run(staged, "starter_diff", {}))
-    assert diff["revision"] == newest["revision"]
-    assert not diff["modified"]
-    assert not diff["added"]
-    assert not diff["removed"]
-    assert diff["unchanged"] == sorted(newest["files"])
+    # The image bakes exactly the runtime-loaded manifests and never a staged
+    # one, so it ranks the same candidates as the in-process analyzer over the
+    # package data. A kit is diff-clean here only once its manifest is active.
+    assert "error" not in diff, diff
+    assert diff == json.loads(
+        await InProcessAnalyzerHarness().run(staged, "starter_diff", {})
+    )
+    assert {item["revision"] for item in diff["candidates"]} == {
+        json.loads(path.read_text())["revision"] for path in L2_STARTER_MANIFESTS
+    }
+    assert not diff["truncated"]
     surfaces = json.loads(await harness.run(staged, "integrity_surfaces", {}))
     assert not surfaces["truncated"]
     assert surfaces["surfaces"]["service_entry"]["count"] > 0
