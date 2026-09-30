@@ -31,8 +31,14 @@ class TreasuryServiceBucket(BaseModel):
         if self.allocation_bps and (
             not self.receiving_hotkey or not self.receiving_coldkey
         ):
-            raise ValueError("nonzero service allocation requires receiving wallet identity")
-        if self.bucket_id == "gm_credits" and self.allocation_bps and not self.service_account_ref:
+            raise ValueError(
+                "nonzero service allocation requires receiving wallet identity"
+            )
+        if (
+            self.bucket_id == "gm_credits"
+            and self.allocation_bps
+            and not self.service_account_ref
+        ):
             raise ValueError("GM allocation requires an account reference")
         return self
 
@@ -44,7 +50,9 @@ class TreasurySettings(BaseModel):
     allocation_version: Literal[1, 2] = 1
     maintenance_bps: Annotated[int, Field(ge=0, le=MAX_TREASURY_BPS)] = 0
     gm_bps: Annotated[int, Field(ge=0, le=MAX_TREASURY_BPS)] = 0
-    service_buckets: Annotated[tuple[TreasuryServiceBucket, ...], Field(max_length=20)] = ()
+    service_buckets: Annotated[
+        list[TreasuryServiceBucket], Field(default_factory=list, max_length=20)
+    ]
     treasury_hotkey: str | None = None
     treasury_coldkey: str | None = None
     gm_account_ref: str | None = None
@@ -72,10 +80,19 @@ class TreasurySettings(BaseModel):
             ]
             if len(wallets) != len(set(wallets)):
                 raise ValueError("service buckets must have distinct wallet identities")
-            if sum(bucket.allocation_bps for bucket in self.service_buckets) > MAX_SERVICE_BPS:
+            if (
+                sum(bucket.allocation_bps for bucket in self.service_buckets)
+                > MAX_SERVICE_BPS
+            ):
                 raise ValueError("combined service allocation exceeds 1000 bps")
-            if self.max_daily_outflow_rao or self.max_single_topup_rao or self.max_slippage_bps:
-                raise ValueError("v1 GM payment bounds cannot authorize v2 service spending")
+            if (
+                self.max_daily_outflow_rao
+                or self.max_single_topup_rao
+                or self.max_slippage_bps
+            ):
+                raise ValueError(
+                    "v1 GM payment bounds cannot authorize v2 service spending"
+                )
             return self
         if self.service_buckets:
             raise ValueError("v1 allocation cannot contain service buckets")
@@ -94,7 +111,9 @@ class TreasurySettings(BaseModel):
     @property
     def miner_bps(self) -> int:
         if self.allocation_version == 2:
-            return 10_000 - sum(bucket.allocation_bps for bucket in self.service_buckets)
+            return 10_000 - sum(
+                bucket.allocation_bps for bucket in self.service_buckets
+            )
         return 10_000 - self.maintenance_bps - self.gm_bps
 
 

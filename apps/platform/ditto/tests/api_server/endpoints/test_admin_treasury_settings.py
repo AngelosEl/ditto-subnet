@@ -164,12 +164,24 @@ async def test_v2_service_wallets_are_shadow_only_and_v1_history_is_preserved(
 
     invalid = [
         {"service_buckets": [settings["service_buckets"][0]] * 2},
-        {"service_buckets": [settings["service_buckets"][0], {
-            **settings["service_buckets"][1], "allocation_bps": 1,
-        }]},
-        {"service_buckets": [settings["service_buckets"][0], {
-            **settings["service_buckets"][1], "receiving_hotkey": "gm-receiving-hotkey",
-        }]},
+        {
+            "service_buckets": [
+                settings["service_buckets"][0],
+                {
+                    **settings["service_buckets"][1],
+                    "allocation_bps": 1,
+                },
+            ]
+        },
+        {
+            "service_buckets": [
+                settings["service_buckets"][0],
+                {
+                    **settings["service_buckets"][1],
+                    "receiving_hotkey": "gm-receiving-hotkey",
+                },
+            ]
+        },
         {"gm_bps": 1},
         {"max_daily_outflow_rao": 1},
         {"mode": "active"},
@@ -178,6 +190,10 @@ async def test_v2_service_wallets_are_shadow_only_and_v1_history_is_preserved(
         response = await client.post(
             _URL,
             headers=_HEADERS,
-            json={**proposal, "expected_revision": 2, "settings": {**settings, **change}},
+            json={
+                **proposal,
+                "expected_revision": 2,
+                "settings": {**settings, **change},
+            },
         )
         assert response.status_code == 422, (change, response.text)
