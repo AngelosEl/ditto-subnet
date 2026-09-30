@@ -30,6 +30,7 @@ from scripts.generate_starter_provenance import (
     ORIGIN,
     RUNTIME_MANIFESTS,
     STAGED_MANIFESTS,
+    is_submittable,
     manifest_drift,
     manifest_number,
     manifests_in,
@@ -58,9 +59,10 @@ def starter_drift_failure(kit: Path, manifest: Path) -> str | None:
         return None
     details = "; ".join(f"{kind}: {', '.join(paths)}" for kind, paths in drift.items())
     return (
-        f"{manifest.name} does not match {kit.name} ({details}). Screener "
-        "reviewers would attribute these first-party kit files to the miner. "
-        "Commit the kit change, then run from the repository root:\n"
+        f"{manifest.name} does not match {kit.name} ({details}). Stage the "
+        "next manifest: activating a stale one would attribute these "
+        "first-party kit files to the miner. Commit the kit change, then run "
+        "from the repository root:\n"
         f"  {regenerate_command(manifest_number(manifest) + 1)}"
     )
 
@@ -83,12 +85,7 @@ def test_newest_manifest_is_a_loadable_monorepo_manifest() -> None:
     assert manifest["origin"] == ORIGIN
     assert len(str(manifest["revision"])) == 40
     # Nothing the starter ``submit`` packager excludes is ever trusted.
-    assert not [
-        path
-        for path in files
-        if {".agents", ".claude", ".git", "target"} & set(path.split("/"))
-        or path.rsplit("/", 1)[-1].startswith(".env")
-    ]
+    assert [path for path in files if not is_submittable(path)] == []
 
 
 def test_staged_and_runtime_manifests_share_one_version_sequence() -> None:
