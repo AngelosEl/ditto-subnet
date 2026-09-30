@@ -2448,6 +2448,7 @@ class TarSourceRepository:
         self._archive_path = archive_path
         self._static_preflight_v2_mode = static_preflight_v2_mode
         self._binary_analysis_cache: dict[str, dict[str, object]] = {}
+        self._member_digests: dict[str, str] | None = None
         members: list[_Member] = []
         seen: set[str] = set()
         with tarfile.open(archive_path, mode="r:gz") as archive:
@@ -3435,16 +3436,37 @@ class TarSourceRepository:
             return None
 
     def _member_sha256(self, path: str) -> str:
-        member_info = self._members[path]
-        digest = hashlib.sha256()
+        if self._member_digests is None:
+            self._member_digests = self._hash_members()
+        return self._member_digests[path]
+
+    def _hash_members(self) -> dict[str, str]:
+        """Hash every validated member in one sequential pass over the archive.
+
+        Provenance compares each supported manifest file by digest; reopening
+        the gzip stream per file re-decompressed the archive prefix every time.
+        """
+        digests: dict[str, str] = {}
         with tarfile.open(self._archive_path, mode="r:gz") as archive:
-            member = archive.getmember(member_info.archive_name)
-            extracted = archive.extractfile(member)
-            if extracted is None:
-                raise ValueError("provenance file could not be read")
-            while chunk := extracted.read(1024 * 1024):
-                digest.update(chunk)
-        return digest.hexdigest()
+            for member in archive:
+                name = member.name.removeprefix("./")
+                member_info = self._members.get(name)
+                if (
+                    member_info is None
+                    or member_info.archive_name != member.name
+                    or not member.isfile()
+                ):
+                    continue
+                extracted = archive.extractfile(member)
+                if extracted is None:
+                    raise ValueError("provenance file could not be read")
+                digest = hashlib.sha256()
+                while chunk := extracted.read(1024 * 1024):
+                    digest.update(chunk)
+                digests[name] = digest.hexdigest()
+        if digests.keys() != self._members.keys():
+            raise ValueError("provenance file could not be read")
+        return digests
 
     def member_sha256(self, path: str) -> str:
         """Return the digest of one validated regular archive member."""

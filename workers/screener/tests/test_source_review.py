@@ -12,7 +12,7 @@ import struct
 import tarfile
 import zipfile
 from pathlib import Path
-from typing import IO
+from typing import IO, Any
 
 import httpx
 import pytest
@@ -4107,6 +4107,60 @@ def test_closest_official_provenance_reports_ambiguous_exact_tie(
     assert provenance["candidate_revisions"] == ["newer", "older"]
     assert provenance["selection"] == "ambiguous-closest-supported-revisions"
     assert provenance["matched_exact_files"] == ["README.md"]
+
+
+def test_provenance_hashes_the_archive_once_across_manifests(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    files = {
+        "./Dockerfile": b"FROM scratch\n",
+        "src/main.rs": b"fn main() {}\n",
+        "fixtures/model.bin": bytes(range(256)) * 8192,
+    }
+    archive = _archive_files(tmp_path, files)
+    digests = {
+        name.removeprefix("./"): hashlib.sha256(raw).hexdigest()
+        for name, raw in files.items()
+    }
+    manifests: list[str] = []
+    for revision in ("v1", "v2", "v3"):
+        manifest = tmp_path / f"{revision}.json"
+        manifest.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "origin": "public/starter",
+                    "revision": revision,
+                    "files": {
+                        **digests,
+                        "src/main.rs": digests["src/main.rs"]
+                        if revision == "v2"
+                        else hashlib.sha256(revision.encode()).hexdigest(),
+                    },
+                }
+            )
+        )
+        manifests.append(str(manifest))
+    repository = TarSourceRepository(str(archive))
+    opened = 0
+    real_open = source_review_module.tarfile.open
+
+    def counting_open(*args: Any, **kwargs: Any) -> tarfile.TarFile:
+        nonlocal opened
+        opened += 1
+        return real_open(*args, **kwargs)
+
+    monkeypatch.setattr(source_review_module.tarfile, "open", counting_open)
+
+    provenance = json.loads(repository.closest_trusted_provenance(tuple(manifests)))
+
+    assert opened == 1
+    assert provenance["revision"] == "v2"
+    assert provenance["matched_exact_files"] == sorted(digests)
+    assert all(repository.member_sha256(name) == digests[name] for name in digests)
+    assert opened == 1
+    with pytest.raises(ValueError, match="unknown archive member"):
+        repository.member_sha256("missing.rs")
 
 
 async def test_sanitized_shortcut_fixture_produces_bounded_risk_digest(
