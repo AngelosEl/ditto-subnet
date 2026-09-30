@@ -104,6 +104,13 @@ necessarily the currently instructed direct-deposit address for a new payment.
    itself does not establish that contract. Bitsec and Bitcast require their
    own reviewed invoices, payees, spending approvals and reconciliation rules.
 
+The existing `ditto/treasury/store.py` journal is GM-specific (`gm_alpha_rao`,
+`maintenance_alpha_rao`, and one top-up plan). Its `execute_one_leg` entry point
+is deliberately blocked before signing. It must not be treated as a generic
+three-service payment engine. Add a bucket-scoped, finalized-receipt sweep
+journal first; keep each provider's payment adapter separate and blocked until
+its own authenticated instructions and reconciliation proof exist.
+
 ## Activation sequence
 
 1. Settle the total-cap and denominator decisions publicly; review miner
@@ -116,14 +123,16 @@ necessarily the currently instructed direct-deposit address for a new payment.
    reject every nonzero recipient until registration and ownership are verified
    on a finalized block. Hosted CI and an independent exact-head review are
    required before merge.
-3. Review and register separate keys and hotkeys through a protected ceremony,
-   after an exact infrastructure plan and explicit action-time approval.
-   Verify finalized ownership, signer isolation, recovery and read-only public
-   visibility. Do not activate #2327 merely because its Terraform is valid.
+3. Choose direct recipients or one collector plus holding coldkeys. Review and
+   register only the chosen keys through a protected ceremony, after an exact
+   infrastructure plan and explicit action-time approval. Verify finalized
+   ownership, signer isolation, recovery and public read-only visibility. Do
+   not activate #2327 merely because its Terraform is valid.
 4. Ship a validator implementation behind a default-off flag. Rehearse zero
-   allocation, small shadow forecasts, multiple recipients, rounding and all
-   failure paths across every serving validator version. Publish expected
-   versus actual finalized receipts before any positive weight routing.
+   allocation, small shadow forecasts, rounding and every chosen recipient
+   failure path across every serving validator version. If using a collector,
+   rehearse the separate finalized-stake sweep and per-bucket reconciliation.
+   Publish expected versus actual finalized receipts before positive routing.
 5. Coordinate a separate burn/release decision with screening and scoring
    recovery. Activate one small, time-bounded allocation with an immediate
    zero rollback, audit finalized funds and public receipts, then increase only
