@@ -2,6 +2,23 @@
 
 <!-- version list -->
 
+## v0.331.3 (2026-09-30)
+
+### Bug Fixes
+
+- **backroom**: Expose signed fixture worker capability
+  ([#2591](https://github.com/ditto-assistant/ditto-subnet/pull/2591),
+  [`2c0ca27`](https://github.com/ditto-assistant/ditto-subnet/commit/2c0ca2786421e74c6a460ebd4130090a2ff7b7a1))
+
+- **screener**: Account for manifest-matched starter model in review leads
+  ([#2590](https://github.com/ditto-assistant/ditto-subnet/pull/2590),
+  [`1e1bc38`](https://github.com/ditto-assistant/ditto-subnet/commit/1e1bc387809f6a784654000d111885781fb780fc))
+
+- **screener-orchestrator**: Record each deferred GCE scale-in once
+  ([#2564](https://github.com/ditto-assistant/ditto-subnet/pull/2564),
+  [`3856518`](https://github.com/ditto-assistant/ditto-subnet/commit/3856518c044cbc5952c9778337949331e1cdb742))
+
+
 ## v0.331.2 (2026-09-30)
 
 ### Bug Fixes
