@@ -43,18 +43,24 @@ and recovery review. The draft host-activation PR #2327 must stay dormant.
 
 The existing personal wallet
 `5Ecr5EGwvg2Xue2MdeJeCVSMLYWYuGcFb7y41eo7rQy3mGDN` is historical
-payment evidence, **not** the proposed treasury custody wallet. Taostats shows
-[3.073733948 TAO on September 27](https://taostats.io/extrinsic/9161565-0011)
-and [3.270986440 TAO on September 28](https://taostats.io/extrinsic/9167610-0004)
-sent from it to the same `5FqbWhtCvoSD3X3iNxyWXogrKGmeVLnjZXoNWPx16yErYQd9`
-address. [GM's own buybacks page](https://saygm.com/buybacks) identifies that
-address as its treasury. These transfers align in date and approximate value
-with the user's two $1,000 GM `X402-Relayed` top-up rows. That is strong
-provider attribution, but the chain receipts still do not identify the GM
-account credited or prove the exact billing-row match. Correlate exact GM
-billing deposit references and conversion times before using them as an
-automated payment template. The public treasury address is not necessarily
-the currently instructed direct-deposit address for a new payment.
+payment evidence, **not** the proposed treasury custody wallet. Four outgoing
+TAO transfers went to the same
+`5FqbWhtCvoSD3X3iNxyWXogrKGmeVLnjZXoNWPx16yErYQd9` address:
+
+| User's GM top-up row | Candidate chain transfer |
+| --- | --- |
+| September 13, $200 | [0.852283908 TAO](https://taostats.io/extrinsic/9062791-0015), September 14 02:11 UTC / September 13 22:11 Toronto |
+| September 18, $250 | [1.002844206 TAO](https://taostats.io/extrinsic/9095188-0019), September 18 14:39 UTC |
+| September 27, $1,000 | [3.073733948 TAO](https://taostats.io/extrinsic/9161565-0011), September 27 20:35 UTC |
+| September 28, $1,000 | [3.270986440 TAO](https://taostats.io/extrinsic/9167610-0004), September 28 16:44 UTC |
+
+[GM's own buybacks page](https://saygm.com/buybacks) identifies that address
+as its treasury. The dates, destination, and approximate values strongly link
+these transfers to the user's four `X402-Relayed` top-ups. The chain receipts
+still do not identify the GM account credited or prove each exact billing-row
+match. Correlate GM deposit references and conversion times before using them
+as an automated payment template. The public treasury address is not
+necessarily the currently instructed direct-deposit address for a new payment.
 
 ## Allocation, settlement and publication
 
