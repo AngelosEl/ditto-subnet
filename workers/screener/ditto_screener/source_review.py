@@ -2745,9 +2745,8 @@ class TarSourceRepository:
         whole-program analyses still read every file, because a miner-authored
         chain can run through an unmodified starter file.
         """
-        trusted_digests = _trusted_starter_digests(
-            provenance_manifest_paths or self._provenance_manifest_paths
-        )
+        manifests = self._starter_manifests(provenance_manifest_paths)
+        trusted_digests = _trusted_starter_digests(manifests)
         readable: list[tuple[str, str]] = []
         miner_readable: list[tuple[str, str]] = []
         trusted_starter_skipped = 0
@@ -2767,7 +2766,7 @@ class TarSourceRepository:
             for name in ordered_names:
                 member_info = self._members[name]
                 if member_info.size > _OPAQUE_SIZE_LIMIT:
-                    model = self._published_starter_model(archive, name)
+                    model = self._published_starter_model(archive, name, manifests)
                     if model is None:
                         truncated = True
                     else:
@@ -2836,14 +2835,23 @@ class TarSourceRepository:
             "truncated": truncated,
         }
 
+    def _starter_manifests(self, override: tuple[str, ...] | None) -> tuple[str, ...]:
+        """A per-call manifest set, else the repository's, else the runtime set.
+
+        Only ``None`` falls through; an explicit empty tuple trusts nothing.
+        """
+        return _starter_manifest_paths(
+            override if override is not None else self._provenance_manifest_paths
+        )
+
     def _published_starter_model(
-        self, archive: tarfile.TarFile, name: str
+        self, archive: tarfile.TarFile, name: str, manifests: tuple[str, ...]
     ) -> dict[str, object] | None:
         """Account for an oversized member only as the exact starter model."""
         member_info = self._members[name]
         if name != _STARTER_MODEL_PATH or member_info.size > _MAX_STARTER_MODEL_BYTES:
             return None
-        digests = _starter_model_digests()
+        digests = _starter_model_digests(manifests)
         if not digests:
             return None
         member = archive.getmember(member_info.archive_name)
@@ -2957,7 +2965,7 @@ class TarSourceRepository:
             raise ValueError("static preflight mode must be off, shadow, or enforce")
         readable: list[tuple[str, str]] = []
         trusted_digests = _trusted_starter_digests(
-            provenance_manifest_paths or self._provenance_manifest_paths
+            self._starter_manifests(provenance_manifest_paths)
         )
         bytes_scanned = 0
         members_considered = 0
@@ -4665,12 +4673,12 @@ def _bounded_json(value: object) -> str:
     )
 
 
-def _starter_model_digests() -> set[str]:
-    """Starter-model SHA-256 values published by every installed manifest."""
+def _starter_model_digests(manifests: tuple[str, ...]) -> set[str]:
+    """Starter-model SHA-256 values published by the given manifests."""
     digests: set[str] = set()
     try:
-        for path in sorted(_STARTER_MANIFEST_DIR.glob("starter-kit-provenance-*.json")):
-            files = _load_provenance_manifest(path)["files"]
+        for manifest in manifests:
+            files = _load_provenance_manifest(Path(manifest))["files"]
             if isinstance(files, dict) and isinstance(
                 files.get(_STARTER_MODEL_PATH), str
             ):
@@ -4748,13 +4756,15 @@ def _starter_manifest_paths(
 ) -> tuple[str, ...]:
     """The runtime starter manifests, unless a caller pins its own set.
 
-    Only ``data/`` is globbed; a manifest staged outside it is never trusted.
+    ``None`` means the runtime set, and only ``data/`` is globbed, so a
+    manifest staged outside it is never trusted. An explicit tuple is used as
+    given: an empty one trusts nothing.
     """
-    return override or tuple(
+    if override is not None:
+        return override
+    return tuple(
         str(path)
-        for path in sorted(
-            (Path(__file__).parent / "data").glob("starter-kit-provenance-*.json")
-        )
+        for path in sorted(_STARTER_MANIFEST_DIR.glob("starter-kit-provenance-*.json"))
     )
 
 

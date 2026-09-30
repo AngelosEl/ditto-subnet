@@ -969,6 +969,71 @@ def test_review_leads_need_installed_manifest_for_starter_model(
     assert leads["nontext"] == []
 
 
+def _runtime_pinned_kit_source() -> tuple[str, bytes]:
+    """A kit source file whose exact bytes a runtime manifest already pins."""
+    files = _current_starter_kit_files()
+    for path in sorted(_exact_starter_matches(files, _STARTER_MANIFESTS)):
+        if source_review_module.is_executable_source_path(path):
+            return path, files[path]
+    pytest.skip("no runtime manifest pins a current kit source file")
+
+
+@pytest.mark.parametrize("level", ["repository", "call"])
+def test_empty_manifest_override_trusts_nothing_in_review_leads(
+    tmp_path: Path, level: str
+) -> None:
+    path, raw = _runtime_pinned_kit_source()
+    archive = str(
+        _archive_files(tmp_path, {path: raw, _STARTER_MODEL: _stock_starter_model()})
+    )
+
+    default = TarSourceRepository(archive).review_leads()
+    empty = (
+        TarSourceRepository(archive, provenance_manifest_paths=()).review_leads()
+        if level == "repository"
+        else TarSourceRepository(archive).review_leads(())
+    )
+
+    # None means the runtime set; an explicit empty set trusts nothing, for
+    # the digest skip and for the oversized starter model alike.
+    assert default["trusted_starter_skipped"] == 1
+    assert default["truncated"] is False
+    assert empty["trusted_starter_skipped"] == 0
+    assert empty["truncated"] is True
+    assert empty["nontext"] == []
+
+
+@pytest.mark.parametrize("level", ["repository", "call"])
+def test_empty_manifest_override_trusts_nothing_in_preflight(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, level: str
+) -> None:
+    path, raw = _runtime_pinned_kit_source()
+    scanned: list[list[str]] = []
+
+    def recording_detector(
+        readable: list[tuple[str, str]], **kwargs: object
+    ) -> list[dict[str, object]]:
+        scanned.append([name for name, _text in readable])
+        return find_decisive_malicious_source(readable, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(
+        source_review_module, "find_decisive_malicious_source", recording_detector
+    )
+    archive = str(_archive_files(tmp_path, {path: raw}))
+
+    TarSourceRepository(archive).malicious_preflight(artifact_sha256="a" * 64)
+    if level == "repository":
+        TarSourceRepository(archive, provenance_manifest_paths=()).malicious_preflight(
+            artifact_sha256="a" * 64
+        )
+    else:
+        TarSourceRepository(archive).malicious_preflight(
+            artifact_sha256="a" * 64, provenance_manifest_paths=()
+        )
+
+    assert scanned == [[], [path]]
+
+
 @pytest.mark.parametrize("shadow", ["special", "hardlink", "symlink"])
 def test_review_leads_hash_only_the_admitted_starter_model_member(
     tmp_path: Path, shadow: str
