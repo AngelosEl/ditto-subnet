@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.330.10 (2026-09-30)
+
+### Bug Fixes
+
+- **screener**: Bind provider leads to scored runtime selector
+  ([#2573](https://github.com/ditto-assistant/ditto-subnet/pull/2573),
+  [`5db8953`](https://github.com/ditto-assistant/ditto-subnet/commit/5db89530d8a4f515fff555bb11bf8d70e28de491))
+
+
 ## v0.330.9 (2026-09-30)
 
 ### Bug Fixes
