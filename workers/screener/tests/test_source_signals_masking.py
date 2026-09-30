@@ -589,6 +589,55 @@ def test_dockerfile_exec_form_is_not_shell_lexed() -> None:
     assert mask_comments(source, "Dockerfile") == source
 
 
+# BuildKit runs every one of these here-documents, including the ``#`` line,
+# which sits inside the script's double-quoted string: the delimiter is the
+# rest of the shell word after ``<<`` with its quotes removed. A shorter or
+# missing delimiter ended the lexer's skip early and blanked that line as a
+# Dockerfile comment.
+@pytest.mark.parametrize(
+    ("opener", "delimiter"),
+    [
+        pytest.param('<<"E F"', "E F", id="quoted-blank"),
+        pytest.param("<<-'E F'", "E F", id="strip-tabs-quoted-blank"),
+        pytest.param("<<.EOF", ".EOF", id="leading-dot"),
+        pytest.param('<<"$X"', "$X", id="dollar"),
+        pytest.param('<<"EOF"x', "EOFx", id="quote-then-text"),
+        pytest.param("<<EOF;true", "EOF;true", id="semicolon"),
+        pytest.param("<<  END", "END", id="blanks-then-name"),
+        pytest.param("<<\tEND", "END", id="tab-then-name"),
+        pytest.param('cat << "E F"', "E F", id="blank-then-quoted-blank"),
+        pytest.param("cat << EOF;true", "EOF;true", id="blank-then-semicolon"),
+    ],
+)
+def test_dockerfile_here_document_ends_at_buildkits_delimiter(
+    opener: str, delimiter: str
+) -> None:
+    source = (
+        f"FROM alpine\nRUN {opener}\nEOF\n"
+        'echo "\n# $(cat /root/.ssh/id_rsa)\n"\n'
+        f"{delimiter}\n"
+    )
+
+    assert "# $(cat /root/.ssh/id_rsa)" in mask_comments(source, "Dockerfile")
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "FROM alpine\nRUN <<EOF\n# body\nEOF\n# c\n",
+        "FROM alpine\nRUN python3 - <<'PY' && echo ok\n# body\nPY\n# c\n",
+        "FROM alpine\nCOPY <<EOF /app/run.sh\n# body\nEOF\n# c\n",
+        "FROM alpine\nRUN 2<<EOF cat /dev/fd/2\n# body\nEOF\n# c\n",
+        "FROM alpine\nRUN cat<<EOF\n# c\n",
+    ],
+)
+def test_dockerfile_here_documents_keep_their_masking(source: str) -> None:
+    masked = mask_comments(source, "Dockerfile")
+
+    assert "# body" in masked or "# body" not in source
+    assert masked.endswith(" " * len("# c") + "\n")
+
+
 _FUZZ_PIECES = [
     *"ab x=;(){}[]<>/\\*#'\"`$|&-:!?.,01rbfL@",
     *_LINE_BREAKS,

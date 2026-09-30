@@ -1028,7 +1028,11 @@ def _skip_heredoc_bodies(
 
 # --- Dockerfile ----------------------------------------------------------------
 
-_DOCKER_HEREDOC = re.compile(r"(?<!<)<<(-?)\s*([\"']?)([A-Za-z0-9_][\w.-]*)\2")
+_DOCKER_HEREDOC_OPEN = re.compile(r"(?<!<)<<(-?)(?!<)")
+# The rest of a shell word after ``<<``: BuildKit ends it at an unquoted blank
+# and removes its quotes. A backslash, ``$`` or ``<`` stops the match.
+_DOCKER_HEREDOC_NAME = re.compile(r"(?:[^\s'\"\\<$]|'[^'\n]*'|\"[^\"\\$\n]*\")+")
+_DOCKER_HEREDOC_QUOTE = re.compile(r"'([^']*)'|\"([^\"]*)\"")
 _DOCKER_DIRECTIVE = re.compile(r"#[ \t]*(?:syntax|escape|check)[ \t]*=", re.I)
 _DOCKER_INSTRUCTION = re.compile(r"([A-Za-z]+)(?=[ \t]|$)")
 _DOCKER_SHELL_FORM = frozenset({"RUN", "CMD", "ENTRYPOINT"})
@@ -1040,7 +1044,7 @@ _DOCKER_OTHER_SHELL = re.compile(
 )
 
 
-def _lex_dockerfile(text: str) -> bytearray:
+def _lex_dockerfile(text: str) -> bytearray | None:
     """Dockerfile: whole-line ``#`` comments, plus shell comments in RUN.
 
     Docker strips a line whose first non-blank character is ``#``, even inside
@@ -1048,6 +1052,8 @@ def _lex_dockerfile(text: str) -> bytearray:
     RUN/CMD/ENTRYPOINT text goes to ``/bin/sh``, so the shell lexer decides its
     trailing comments. Parser directives at the top (``# syntax=`` selects the
     BuildKit frontend) and here-document bodies (script content) stay visible.
+    A here-document whose delimiter BuildKit may read differently leaves the
+    file unmasked, since ending its body early would blank script lines.
     """
     kinds = bytearray(len(text))
     lines = _lf_lines(text)
@@ -1072,7 +1078,9 @@ def _lex_dockerfile(text: str) -> bytearray:
         physical = content
         heredoc = False
         while True:
-            markers = list(_DOCKER_HEREDOC.finditer(physical))
+            markers = _dockerfile_heredocs(physical)
+            if markers is None:
+                return None
             if markers:
                 heredoc = True
                 index = _skip_dockerfile_heredocs(lines, index, markers)
@@ -1116,12 +1124,50 @@ def _lex_dockerfile(text: str) -> bytearray:
     return kinds
 
 
+def _dockerfile_heredocs(line: str) -> list[tuple[str, bool]] | None:
+    """The (delimiter, strip tabs) of each here-document ``line`` opens.
+
+    BuildKit opens one at a shell word ``<<NAME`` (optionally after
+    file-descriptor digits, with ``-`` to strip tabs) or at a bare ``<<``
+    followed by blanks and a NAME word, and ends it at a line equal to NAME
+    with quotes removed (``<<"E F"`` at ``E F``, ``<< EOF;x`` at ``EOF;x``).
+    Only a ``<<`` that follows another printable character in the same word
+    (``cat<<EOF``) is ruled out; any other opener counts, because skipping
+    lines that are not a body only leaves them visible. None means a delimiter
+    this lexer cannot predict (escapes, variables, an unclosed quote, unusual
+    blanks).
+    """
+    heredocs: list[tuple[str, bool]] = []
+    for opener in _DOCKER_HEREDOC_OPEN.finditer(line):
+        before = opener.start()
+        while before and line[before - 1].isascii() and line[before - 1].isdigit():
+            before -= 1
+        if before:
+            previous = line[before - 1]
+            if previous.isascii() and previous.isprintable() and previous != " ":
+                continue
+        cursor = opener.end()
+        while cursor < len(line) and line[cursor] in " \t":
+            cursor += 1
+        name = _DOCKER_HEREDOC_NAME.match(line, cursor)
+        stop = cursor if name is None else name.end()
+        if stop < len(line) and line[stop] not in " \t":
+            return None
+        if name is None:
+            continue
+        delimiter = _DOCKER_HEREDOC_QUOTE.sub(
+            lambda quoted: quoted.group(1) or quoted.group(2) or "", name.group()
+        )
+        if delimiter:
+            heredocs.append((delimiter, opener.group(1) == "-"))
+    return heredocs
+
+
 def _skip_dockerfile_heredocs(
-    lines: list[tuple[int, str]], index: int, markers: list[re.Match[str]]
+    lines: list[tuple[int, str]], index: int, markers: list[tuple[str, bool]]
 ) -> int:
     """Return the index of the first line after every here-document body."""
-    for marker in markers:
-        delimiter, strip_tabs = marker.group(3), marker.group(1) == "-"
+    for delimiter, strip_tabs in markers:
         while index < len(lines):
             candidate = lines[index][1].removesuffix("\r")
             index += 1
