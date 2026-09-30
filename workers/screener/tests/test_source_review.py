@@ -4174,16 +4174,20 @@ def _current_starter_kit_files() -> dict[str, bytes]:
 
 
 def _current_starter_kit_sources() -> dict[str, bytes]:
-    """The kit without its large model blobs, which trust selection ignores.
+    """The kit's UTF-8 text files, without the binary model blobs.
 
-    A gzip archive re-decompresses on every backward seek, so leaving the
-    multi-megabyte models out keeps whole-kit provenance tests fast.
+    Trust selection and the lead scan treat the blobs like any other file,
+    but a gzip archive re-decompresses on every backward seek, so leaving
+    the multi-megabyte models out keeps whole-kit tests fast.
     """
-    return {
-        path: raw
-        for path, raw in _current_starter_kit_files().items()
-        if len(raw) <= 1024 * 1024
-    }
+    sources = {}
+    for path, raw in _current_starter_kit_files().items():
+        try:
+            raw.decode("utf-8")
+        except UnicodeDecodeError:
+            continue
+        sources[path] = raw
+    return sources
 
 
 def _staged_starter_manifests() -> tuple[str, ...]:
@@ -4248,11 +4252,30 @@ def _untrusting_manifest(tmp_path: Path) -> str:
     return str(manifest)
 
 
+def _kit_manifest(tmp_path: Path, files: dict[str, bytes]) -> str:
+    """A manifest pinning exactly ``files``, so a test never depends on which
+    manifests the runtime set holds."""
+    manifest = tmp_path / "kit-manifest.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "origin": "test",
+                "revision": "kit",
+                "files": {
+                    path: hashlib.sha256(raw).hexdigest() for path, raw in files.items()
+                },
+            }
+        )
+    )
+    return str(manifest)
+
+
 def test_review_leads_skip_exact_starter_files(tmp_path: Path) -> None:
-    files = _current_starter_kit_files()
+    files = _current_starter_kit_sources()
     archive = str(_archive_files(tmp_path, files))
 
-    leads = TarSourceRepository(archive).review_leads()
+    leads = TarSourceRepository(archive).review_leads((_kit_manifest(tmp_path, files),))
     untrusted = TarSourceRepository(archive).review_leads(
         (_untrusting_manifest(tmp_path),)
     )
@@ -4274,10 +4297,26 @@ def test_review_leads_skip_exact_starter_files(tmp_path: Path) -> None:
         assert leads[key] == untrusted[key], key
 
 
+def test_review_leads_trust_only_runtime_manifests(tmp_path: Path) -> None:
+    files = _current_starter_kit_sources()
+    staged = _staged_starter_manifests()
+    runtime_exact = _exact_starter_matches(files, _STARTER_MANIFESTS)
+    staged_only = _exact_starter_matches(files, staged) - runtime_exact
+    assert staged_only
+
+    # The default trust set, which both L1 and L2 inventories use, is the
+    # runtime manifests. A kit file that only a staged manifest pins keeps
+    # its leads until that manifest is activated.
+    leads = TarSourceRepository(str(_archive_files(tmp_path, files))).review_leads()
+
+    assert leads["trusted_starter_skipped"] == len(runtime_exact)
+    assert leads["files_scanned"] - leads["trusted_starter_skipped"] >= len(staged_only)
+
+
 def test_review_leads_keep_every_lead_of_a_modified_starter_fixture(
     tmp_path: Path,
 ) -> None:
-    files = _current_starter_kit_files()
+    files = _current_starter_kit_sources()
     fixture = "fixtures/seed-user/pairs.json"
     edited = files[fixture] + b"\n"
     expected = find_source_review_leads([(fixture, edited.decode())])
@@ -4287,14 +4326,60 @@ def test_review_leads_keep_every_lead_of_a_modified_starter_fixture(
     # of its leads while every other file is still a trusted starter file.
     leads = TarSourceRepository(
         str(_archive_files(tmp_path, {**files, fixture: edited}))
-    ).review_leads()
+    ).review_leads((_kit_manifest(tmp_path, files),))
 
     assert leads["trusted_starter_skipped"] == leads["files_scanned"] - 1
     assert leads["items"] == expected
 
 
+_TEST_GATED_ZERO_TOKEN_REPLY = (
+    b"pub fn serve() {}\n\n#[cfg(test)]\nmod tests {\n"
+    b"    pub fn build_reply(question: &str) -> RunResponse {\n"
+    b"        RunResponse {\n"
+    b"            answer: question.to_string(),\n"
+    b"            prompt_tokens: 0,\n"
+    b"            output_tokens: 0,\n"
+    b"        }\n"
+    b"    }\n"
+    b"}\n"
+)
+
+
+@pytest.mark.parametrize(
+    "hidden",
+    [
+        b'[build]\nrustflags = ["--cfg", "test"]\n' + b"#" * (2 * 1024 * 1024),
+        b'\xff\n[build]\nrustflags = ["--cfg", "test"]\n',
+    ],
+    ids=["oversized", "undecodable"],
+)
+def test_review_leads_keep_test_items_when_a_build_file_is_unread(
+    tmp_path: Path, hidden: bytes
+) -> None:
+    files = {
+        "Cargo.toml": b'[package]\nname = "serve"\n',
+        "src/lib.rs": _TEST_GATED_ZERO_TOKEN_REPLY,
+    }
+    plain = TarSourceRepository(str(_archive_files(tmp_path, files))).review_leads(
+        (_untrusting_manifest(tmp_path),)
+    )
+    hidden_dir = tmp_path / "hidden"
+    hidden_dir.mkdir()
+
+    # A build file the lead scan cannot read may turn cfg(test) on, so the
+    # test-item exemption is off rather than trusting what it could not see.
+    leads = TarSourceRepository(
+        str(_archive_files(hidden_dir, {**files, ".cargo/config.toml": hidden}))
+    ).review_leads((_untrusting_manifest(tmp_path),))
+
+    assert plain["emulation_fingerprints"] == []
+    assert "zero-token-answer-constructor" in {
+        finding["kind"] for finding in leads["emulation_fingerprints"]
+    }
+
+
 def test_review_leads_not_starved_by_non_source_noise(tmp_path: Path) -> None:
-    files = _current_starter_kit_files()
+    files = _current_starter_kit_sources()
     miner = (
         b"def route(question, memories):\n"
         b'    if contains(question, "canary"):\n'

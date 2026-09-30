@@ -9,7 +9,7 @@ never leave the archive through this module.
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 
 from ditto_screener.rust_test_items import test_only_item_lines
@@ -1905,6 +1905,7 @@ def find_benchmark_emulation_fingerprints(
     files: Iterable[tuple[str, str]],
     *,
     build_context: Iterable[tuple[str, str]] | None = None,
+    build_context_complete: bool = True,
 ) -> list[dict[str, object]]:
     """Return bench-v12 anti-emulation fingerprints as location-only review leads.
 
@@ -1921,24 +1922,25 @@ def find_benchmark_emulation_fingerprints(
     languages it applies to.
 
     Rust test-only items and ``scripts/`` test modules are not served, so they
-    are skipped -- unless the build files in ``build_context`` (default:
-    ``files``) turn ``cfg(test)`` on or invoke that script. Pass the whole
-    archive as ``build_context`` when ``files`` is a subset of it.
+    are skipped, but only while ``build_context`` (default: ``files``) shows
+    that the build cannot compile ``cfg(test)`` in or reach that module. Pass
+    the whole readable archive as ``build_context`` when ``files`` is a subset,
+    and ``build_context_complete=False`` when a member that could change either
+    answer was not readable: then nothing is skipped.
     """
     files = list(files)
-    build_text = _build_control_text(files if build_context is None else build_context)
-    skip_rust_test_items = (
-        build_text is not None and _RUST_TEST_BUILD.search(build_text) is None
+    context = files if build_context is None else list(build_context)
+    skip_rust_test_items = build_context_complete and _rust_test_items_are_inert(
+        context
+    )
+    skipped_script_tests = (
+        _unreached_script_tests(files, context)
+        if build_context_complete
+        else frozenset()
     )
     findings: list[dict[str, object]] = []
     for path, text in sorted(files, key=lambda item: _path_priority(item[0])):
-        if not _is_executable_source_path(path):
-            continue
-        if (
-            build_text is not None
-            and _is_script_test_module(path)
-            and _module_stem(path) not in build_text
-        ):
+        if not _is_executable_source_path(path) or path in skipped_script_tests:
             continue
         language = _fingerprint_language(path)
         if language is None:
@@ -2382,28 +2384,71 @@ def _is_executable_source_path(path: str) -> bool:
     )
 
 
-# Build inputs that can compile ``cfg(test)`` items into the served binary or
-# build a test harness instead of it: ``--cfg test`` in RUSTFLAGS or Cargo
-# ``rustflags``, a build script's ``rustc-cfg``, or ``cargo test`` / ``rustc
-# --test``. Any rustflags setting counts, so an indirect value fails closed.
+# Build inputs that can compile ``cfg(test)`` items into a served binary, or
+# that change how Cargo compiles from somewhere this text view cannot read.
+# Any match keeps Rust test items fingerprinted.
 _RUST_TEST_BUILD = re.compile(
-    r"--cfg\b|rustc-cfg|rustflags|\bcargo\s+(?:\+\S+\s+)?test\b"
-    r"|\brustc\b[^\n]*\s--test\b",
-    re.IGNORECASE,
+    # ``--cfg test`` from any flag source, a build script's ``rustc-cfg``, and
+    # any RUSTFLAGS or ``rustflags`` setting, whatever its value.
+    r"--cfg\b|rustc-cfg|rustflags"
+    # Harness builds compile the crate with ``--test``.
+    r"|\bcargo\s+(?:\+\S+\s+)?"
+    r"(?:t|test|bench|nextest|tarpaulin|llvm-cov|miri|mutants)\b"
+    r"|--(?:tests?|bench(?:es)?|all-targets)\b"
+    r"|--profile[=\s]+[\"']?(?:test|bench)\b|\brustc\b[^\n]*\s--test\b"
+    # Cargo configuration, aliases, or compiler substitutes defined elsewhere.
+    r"|--config\b|\[alias\]|rustc[-_](?:workspace[-_])?wrapper|\brustc\s*="
+    r"|build_rustc\b|\.cargo\b|/cargo\b|cargo_home"
+    # A custom build script can emit a computed ``rustc-cfg``.
+    r"|^\s*build\s*=\s*[\"']",
+    re.IGNORECASE | re.MULTILINE,
 )
 _MAX_BUILD_CONTROL_CHARS = 8 * 1024 * 1024
+# A lockfile pins versions only; it cannot set flags or run a script.
+_LOCKFILES = frozenset(
+    {
+        "bun.lock",
+        "bun.lockb",
+        "cargo.lock",
+        "composer.lock",
+        "deno.lock",
+        "gemfile.lock",
+        "go.sum",
+        "mix.lock",
+        "package-lock.json",
+        "pipfile.lock",
+        "pnpm-lock.yaml",
+        "poetry.lock",
+        "uv.lock",
+        "yarn.lock",
+    }
+)
+# What the runnable build can use to reach a ``scripts/`` test module without
+# naming the module: the ``scripts`` tree itself, a test runner that discovers
+# test modules, or a glob that can expand to one.
+_SCRIPT_TEST_REACH = re.compile(
+    r"(?<![a-z0-9_])scripts(?![a-z0-9_])"
+    r"|(?<![a-z0-9_])(?:py\.?test|unittest|nose2|nosetests|tox)(?![a-z0-9_])"
+    r"|[*?][^\s\"'`;|&)]*\.py\b|test_[a-z0-9_]*\*"
+)
+_IDENTIFIER = re.compile(r"[a-z0-9_]+")
+_MAX_SCRIPT_REACH_CHARS = 16 * 1024 * 1024
 
 
 def _is_build_control_path(path: str) -> bool:
-    """Files that shape the screened image; CI workflows do not."""
+    """Files that shape the screened image; CI workflows and lockfiles do not."""
     normalized = path.casefold().removeprefix("./")
     parts = normalized.split("/")
     name = parts[-1]
-    return not normalized.startswith(".github/") and (
-        _is_build_file(normalized)
-        or name.startswith("dockerfile")
-        or name.endswith(".dockerfile")
-        or (".cargo" in parts[:-1] and name in {"config", "config.toml"})
+    return (
+        not normalized.startswith(".github/")
+        and name not in _LOCKFILES
+        and (
+            _is_build_file(normalized)
+            or name.startswith("dockerfile")
+            or name.endswith(".dockerfile")
+            or (".cargo" in parts[:-1] and name in {"config", "config.toml"})
+        )
     )
 
 
@@ -2425,11 +2470,24 @@ def _build_control_text(files: Iterable[tuple[str, str]]) -> str | None:
     return "\n".join(chunks)
 
 
+def _rust_test_items_are_inert(context: list[tuple[str, str]]) -> bool:
+    """Whether no binary the build makes can contain a ``cfg(test)`` item.
+
+    Only an affirmative, bounded, fully visible build qualifies: a custom
+    build script, oversized build text, or any flag, harness, or Cargo
+    configuration source keeps test items scanned.
+    """
+    if any(path.casefold().rsplit("/", 1)[-1] == "build.rs" for path, _ in context):
+        return False
+    build_text = _build_control_text(context)
+    return build_text is not None and _RUST_TEST_BUILD.search(build_text) is None
+
+
 def _is_script_test_module(path: str) -> bool:
     """A Python test module under the top-level ``scripts/`` tree.
 
     A miner Dockerfile may copy and run ``scripts/``, so only test-named
-    modules qualify, and fingerprinting still scans one the build invokes.
+    modules qualify, and fingerprinting still scans one the build can reach.
     """
     normalized = path.casefold().removeprefix("./")
     name = normalized.rsplit("/", 1)[-1]
@@ -2443,6 +2501,77 @@ def _is_script_test_module(path: str) -> bool:
 def _module_stem(path: str) -> str:
     """``scripts/test_x.py`` -> ``test_x``, matching file and ``-m`` invocations."""
     return path.casefold().rsplit("/", 1)[-1].removesuffix(".py")
+
+
+def _is_script_reach_root(path: str) -> bool:
+    """A build file, or executable source outside ``scripts/``.
+
+    Everything the served build runs starts here, so a ``scripts/`` test
+    module is live only if one of these can reach it.
+    """
+    normalized = path.casefold().removeprefix("./")
+    return _is_build_control_path(normalized) or (
+        _is_executable_source_path(normalized) and not normalized.startswith("scripts/")
+    )
+
+
+def can_reach_test_code(path: str) -> bool:
+    """Whether ``path`` can enable Rust test items or run a scripts/ test module.
+
+    If such a member was not read, callers must keep every item fingerprinted.
+    """
+    return _is_script_reach_root(path)
+
+
+def _unreached_script_tests(
+    files: list[tuple[str, str]], context: list[tuple[str, str]]
+) -> frozenset[str]:
+    """``scripts/`` test modules in ``files`` that nothing runnable can reach.
+
+    A module is reachable when a build file or an executable source outside
+    ``scripts/`` (Rust comments masked) names it as a whole identifier, names
+    the ``scripts`` tree, invokes a test runner, or has a glob that can expand
+    to it. Oversized context skips nothing. A module invoked through a name
+    computed at run time is out of this text view's reach; L1 and L2 still
+    read every file.
+    """
+    # A stem that is not a plain identifier cannot be matched by name, so
+    # that module is never skipped.
+    stems = {
+        _module_stem(path): path
+        for path, _ in files
+        if _is_script_test_module(path) and _IDENTIFIER.fullmatch(_module_stem(path))
+    }
+    if not stems:
+        return frozenset()
+    reached: set[str] = set()
+    size = 0
+    for path, text in context:
+        if not _is_script_reach_root(path):
+            continue
+        size += len(text)
+        if size > _MAX_SCRIPT_REACH_CHARS:
+            return frozenset()
+        # Only Rust comments are masked: the lexer is Rust's, and on a
+        # Dockerfile, shell, or Python file it would hide real text after
+        # ``/*`` or ``//``. Masking only blanks text, so a raw miss stays a
+        # miss and skips the lexer.
+        code = text.casefold()
+        if path.casefold().endswith(".rs") and (
+            _SCRIPT_TEST_REACH.search(code) or _named_stems(code, stems)
+        ):
+            code = _mask_comments(text).casefold()
+        if _SCRIPT_TEST_REACH.search(code) is not None:
+            return frozenset()
+        reached.update(_named_stems(code, stems))
+    return frozenset(path for stem, path in stems.items() if stem not in reached)
+
+
+def _named_stems(text: str, stems: Mapping[str, str]) -> set[str]:
+    """Module stems that ``text`` names as whole identifiers, never substrings."""
+    return {
+        match.group() for match in _IDENTIFIER.finditer(text) if match.group() in stems
+    }
 
 
 def _lead_path_priority(path: str) -> tuple[int, int, str]:
@@ -2480,6 +2609,7 @@ def mask_comments(text: str) -> str:
 
 
 __all__ = [
+    "can_reach_test_code",
     "find_benchmark_emulation_fingerprints",
     "find_decisive_malicious_source",
     "find_source_review_leads",

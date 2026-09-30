@@ -605,15 +605,25 @@ review leads in the initial inventory are search prompts, not findings; the
 reviewer must prove they are reachable before citing them.
 
 The bounded rule leads and emulation fingerprints cover only miner-authored
-bytes. A file whose exact path and sha256 appear in a supported starter
-manifest is left out of both scans and counted in `trusted_starter_skipped`;
-one changed byte keeps all of its leads. Reachability, category guards,
-generator mirroring, and review-adaptation analysis still read every file.
-Executable and build files fill the lead cap before docs, data fixtures, and
-`scripts/` test modules, which keep their leads in whatever capacity remains.
-Fingerprints skip Rust test-only items and `scripts/` test modules, unless a
-build file enables `cfg(test)` (`--cfg`, `rustflags`, `rustc-cfg`,
-`cargo test`) or invokes that script.
+bytes. A file whose exact path and sha256 appear in a runtime starter manifest
+(`ditto_screener/data/`) is left out of both scans and counted in
+`trusted_starter_skipped`; a staged manifest grants nothing, and one changed
+byte keeps all of a file's leads. Reachability, static-v2 advisories, category
+guards, generator mirroring, and review-adaptation analysis still read every
+file. Executable and build files fill the lead cap before docs, data fixtures,
+and `scripts/` test modules, which keep their leads in whatever capacity
+remains.
+
+Fingerprints skip Rust test-only items only while no binary the build makes can
+compile `cfg(test)`: any `--cfg`, `rustflags`, build script, harness build
+(`cargo test`, `bench`, `--tests`, `--all-targets`, a test profile), Cargo
+alias, `--config`, `.cargo` or `CARGO_HOME` configuration, or `rustc` wrapper
+keeps them scanned. They skip a `scripts/` test module only while no build
+file or executable source outside `scripts/` names it, names the `scripts`
+tree, runs a test runner, or has a glob that can expand to it; only Rust
+comments are ignored. Oversized context, or a build file or runnable source
+the lead scan could not read, keeps everything scanned. A name computed at run
+time is out of reach of this text check, so L1 and L2 still read every file.
 
 The following are insufficient on their own:
 
