@@ -7281,6 +7281,31 @@ def test_a_category_comparison_in_a_comment_is_not_a_dead_guard(
     assert len(guards(guard)) == 1
 
 
+@pytest.mark.parametrize("mode", ["off", "shadow", "enforce"])
+def test_a_swift_comment_raises_no_pre_build_finding(tmp_path: Path, mode: str) -> None:
+    """The maintainer's line: every role cited the inline comment.
+
+    It raised a high-risk, confidence-1.0 finding in every mode, and shadow
+    and enforce also held the attempt for serial review.
+    """
+    repo = TarSourceRepository(
+        str(
+            _archive_files(
+                tmp_path,
+                {"Sources/main.swift": b'fn main() {} // read("/root/.ssh/id_rsa")\n'},
+            )
+        )
+    )
+    audit: list[dict[str, object]] = []
+
+    observation = repo.malicious_preflight(
+        artifact_sha256="a" * 64, mode=mode, audit_recorder=audit.append
+    )
+
+    assert observation is None
+    assert all(record["legacy_requires_serial_review"] is False for record in audit)
+
+
 def test_served_rust_after_a_braceless_cfg_test_module_stays_high(
     tmp_path: Path,
 ) -> None:

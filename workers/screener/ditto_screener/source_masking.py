@@ -92,6 +92,7 @@ _LANGUAGE_BY_SUFFIX = {
     ".dart": "dart",
     ".php": "php",
     ".zig": "zig",
+    ".swift": "swift",
     ".py": "python",
     ".pyi": "python",
     ".pyw": "python",
@@ -134,7 +135,17 @@ _STRING_MASKED_LANGUAGES = frozenset(
 # The kernel executes a script's ``#!`` line (``env -S`` accepts a whole
 # command), so it is never masked as a comment.
 _SHEBANG_LANGUAGES = frozenset(
-    {"python", "shell", "javascript", "typescript", "kotlin", "csharp", "dart", "php"}
+    {
+        "python",
+        "shell",
+        "javascript",
+        "typescript",
+        "kotlin",
+        "csharp",
+        "dart",
+        "php",
+        "swift",
+    }
 )
 
 
@@ -170,7 +181,7 @@ def mask_lead_comments(text: str, path: str) -> str:
     """Blank comments for automatic role matching: leads, guards, fingerprints.
 
     Where a lexer masks the file this is ``mask_comments``. For a language
-    without one (Swift, Ruby, Lua, ...), or a source its lexer leaves
+    without one (Ruby, Lua, Haskell, ...), or a source its lexer leaves
     unmasked, whole comment lines are blanked by the language's markers: a
     line whose first text opens a line comment, and a block comment that
     opens a line, through its first closer. That can also blank a line of a
@@ -1202,6 +1213,164 @@ def _lex_zig(text: str) -> bytearray | None:
     return kinds
 
 
+# Swift: nested block comments; strings with ``\(...)`` interpolation, whose
+# code may hold further strings and comments; multi-line ``"""`` strings; and
+# extended ``#"..."#`` delimiters, where only ``\#`` escapes and ``\#(``
+# interpolates. Swift 6 also lexes a bare ``/.../`` as a regular expression
+# where an expression can start, which moves where a ``//`` begins, so any
+# slash that could open one leaves the file unmasked.
+_SWIFT_TOKEN = re.compile(r'//|/\*|#+(?:"""|"|/)|"""|"|/|[`\'()]')
+_SWIFT_MULTILINE_OPEN = re.compile(r"[ \t]*(?:\r\n|\r|\n)")
+_SWIFT_BACKTICK = re.compile(r"`[^`\r\n]+`")
+
+
+class _SwiftString:
+    """One string form: its closing delimiter and the stops inside it."""
+
+    __slots__ = ("close", "interpolation", "stop")
+
+    def __init__(self, hashes: int, *, multiline: bool) -> None:
+        pounds = "#" * hashes
+        escape = re.escape("\\" + pounds)
+        self.close = ('"""' if multiline else '"') + pounds
+        self.interpolation = "\\" + pounds + "("
+        stops = [
+            escape + r"\(",
+            escape + (r"[\s\S]" if multiline else r"[^\r\n]"),
+            re.escape(self.close),
+        ]
+        if not multiline:
+            stops.append(r"[\r\n]")
+        self.stop = re.compile("|".join(stops))
+
+
+@lru_cache(maxsize=64)
+def _swift_string(hashes: int, multiline: bool) -> _SwiftString:
+    return _SwiftString(hashes, multiline=multiline)
+
+
+def _swift_string_rest(
+    text: str, kinds: bytearray, mark_from: int, scan_from: int, form: _SwiftString
+) -> tuple[int, bool] | None:
+    """Mark string text up to its close or its next ``\\(`` interpolation.
+
+    Returns (resume offset, whether an interpolation opened), or None when a
+    one-line string meets a line break or the file ends.
+    """
+    index = scan_from
+    while (stop := form.stop.search(text, index)) is not None:
+        value = stop.group()
+        if value == form.interpolation:
+            _mark(kinds, mark_from, stop.start(), _STRING)
+            return stop.end(), True
+        if value == form.close:
+            _mark(kinds, mark_from, stop.end(), _STRING)
+            return stop.end(), False
+        if value in "\r\n":
+            return None
+        index = stop.end()
+    return None
+
+
+def _swift_may_open_regex(text: str, start: int) -> bool:
+    """Whether the ``/`` at ``start`` could begin a bare regular expression.
+
+    Swift never lexes one right after an operand, before a blank, or without
+    a closing ``/`` on the same line; anything else could be one.
+    """
+    previous = text[start - 1] if start else "\n"
+    if previous.isalnum() or previous in '_)]}"`':
+        return False
+    following = text[start + 1 : start + 2]
+    if not following or following in " \t\r\n":
+        return False
+    return text.find("/", start + 1, _line_end(text, start + 1, _CR_LF)) >= 0
+
+
+def _swift_extended_regex_end(text: str, start: int, hashes: int) -> int | None:
+    """End of a ``#/.../#`` literal whose opener ends at ``start``."""
+    close = text.find("/" + "#" * hashes, start)
+    if close < 0:
+        return None
+    if _SWIFT_MULTILINE_OPEN.match(text, start) is None and _CR_LF.search(
+        text, start, close
+    ):
+        # Only an opener that ends its line starts a multi-line literal.
+        return None
+    return close + 1 + hashes
+
+
+def _lex_swift(text: str) -> bytearray | None:
+    """Swift: nested comments, interpolated and extended strings, regexes."""
+    kinds = bytearray(len(text))
+    # For each open ``\\(`` interpolation: the string it resumes, and the
+    # parentheses opened inside it.
+    forms: list[_SwiftString] = []
+    depths: list[int] = []
+    index = _shebang_end(text)
+    while True:
+        token = _SWIFT_TOKEN.search(text, index)
+        if token is None:
+            return None if forms else kinds
+        start, value = token.start(), token.group()
+        end: int | None = token.end()
+        rest: tuple[int, bool] | None = None
+        form: _SwiftString | None = None
+        if value == "//":
+            end = _line_end(text, start, _CR_LF)
+            _mark(kinds, start, end, _COMMENT)
+        elif value == "/*":
+            end = _nested_block_end(text, start + 2)
+            if end is None:
+                return None
+            _mark(kinds, start, end, _COMMENT)
+        elif value == "/":
+            if _swift_may_open_regex(text, start):
+                return None
+        elif value.endswith("/"):
+            end = _swift_extended_regex_end(text, token.end(), len(value) - 1)
+            if end is None:
+                return None
+            _mark(kinds, start, end, _STRING)
+        elif value.endswith('"'):
+            hashes = len(value) - len(value.lstrip("#"))
+            multiline = value.endswith('"""')
+            if multiline and _SWIFT_MULTILINE_OPEN.match(text, token.end()) is None:
+                return None
+            form = _swift_string(hashes, multiline)
+            rest = _swift_string_rest(text, kinds, start, token.end(), form)
+            if rest is None:
+                return None
+        elif value == "(":
+            if depths:
+                depths[-1] += 1
+        elif value == ")":
+            if depths and depths[-1]:
+                depths[-1] -= 1
+            elif depths:
+                depths.pop()
+                form = forms.pop()
+                rest = _swift_string_rest(text, kinds, start + 1, start + 1, form)
+                if rest is None:
+                    return None
+        elif value == "`":
+            name = _SWIFT_BACKTICK.match(text, start)
+            if name is None:
+                return None
+            end = name.end()
+        else:
+            # A single quote is not Swift syntax.
+            return None
+        if rest is not None:
+            assert form is not None
+            end, opened = rest
+            if opened:
+                forms.append(form)
+                depths.append(0)
+        assert end is not None
+        index = end
+
+
 # --- Python -------------------------------------------------------------------
 
 _PY_NEWLINE = re.compile(r"\r\n|\r|\n")
@@ -2024,6 +2193,7 @@ _COMMENT_FAMILIES = {
     "csharp": _SLASH,
     "dart": _SLASH,
     "zig": _SLASH,
+    "swift": _SLASH,
     "php": _CommentFamily(("//", "#"), ("/*", "*/"), not_line=("#[",)),
     "python": _HASH,
     "shell": _HASH,
@@ -2049,7 +2219,6 @@ _UNLEXED_FAMILY_BY_NAME = {
     "pom.xml": _CommentFamily((), ("<!--", "-->")),
 }
 _UNLEXED_FAMILY_BY_SUFFIX = {
-    ".swift": _SLASH,
     ".scala": _SLASH,
     ".sc": _SLASH,
     ".groovy": _SLASH,
@@ -2148,6 +2317,7 @@ _LEXERS: dict[str, Callable[[str], bytearray | None]] = {
     "dart": _lex_dart,
     "php": _lex_php,
     "zig": _lex_zig,
+    "swift": _lex_swift,
     "python": _lex_python,
     "shell": _lex_shell,
     "dockerfile": _lex_dockerfile,

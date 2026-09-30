@@ -186,7 +186,14 @@ _LANGUAGE_TABLE = [
         (),
         id="zig",
     ),
-    pytest.param("Sources/main.swift", '// x "y" /* z */\n', (), (), id="swift"),
+    pytest.param(
+        "Sources/main.swift",
+        'let u = "http://x/\\(f("/*")) // no"; let d = 4 / 2 // c\n'
+        '/* a /* b */ c */ let m = """\n  x // y\n  """\nlet w = #"q \\ "// raw"#\n',
+        ("// c", "/* a /* b */ c */"),
+        (),
+        id="swift",
+    ),
 ]
 
 
@@ -429,8 +436,9 @@ def test_a_zig_comment_raises_no_source_review_lead() -> None:
 
 
 # Each comment raised a challenge-shaped-retrieval-override lead whose roles
-# all cited the comment: the language had no lexer (or, for the JSX and Java
-# files, its lexer leaves the file unmasked). The same words as code still do.
+# all cited the comment, when its language had no lexer (Zig and Swift now
+# have one; the rest rely on the comment-line view) or its lexer left the
+# file unmasked (the JSX and Java files). The same words as code still do.
 @pytest.mark.parametrize(
     ("path", "comment", "code"),
     [
@@ -558,14 +566,16 @@ def test_a_jsx_comment_line_raises_no_fingerprint() -> None:
 
 
 def test_comment_lines_leave_the_security_views_whole() -> None:
-    """Only lead matching drops comment-looking lines of an unlexed language.
+    """Only lead matching drops comment-looking lines the lexer cannot prove.
 
     ``sh`` runs ``//usr/bin/curl``: the line is a string the shell executes.
-    Leads may miss it, but the decisive preflight and citation admissibility
-    read the full source. A Ruby ``#{...}`` heredoc line is code, so the lead
-    view keeps it too.
+    The bare ``/.../`` on line 1 leaves this Swift file unlexed, so the lead
+    view blanks the line as a comment, but the decisive preflight and citation
+    admissibility still read it. A Ruby ``#{...}`` heredoc line is code, so
+    the lead view keeps it too.
     """
     swift = (
+        "let pattern = /id_rsa/\n"
         'let script = """\n'
         "//usr/bin/curl --unix-socket /var/run/docker.sock http://x/containers/json\n"
         '"""\n'
@@ -574,13 +584,83 @@ def test_comment_lines_leave_the_security_views_whole() -> None:
     ruby = 'key = <<~RUBY\n#{File.read(File.expand_path("~/.ssh/id_rsa"))}\nRUBY\n'
 
     assert mask_comments(swift, "Sources/main.swift") == swift
-    assert not mask_lead_comments(swift, "Sources/main.swift").splitlines()[1].strip()
+    assert not mask_lead_comments(swift, "Sources/main.swift").splitlines()[2].strip()
     assert "malicious_build" in {
         f["category"] for f in _decisive("Sources/main.swift", swift)
     }
-    assert citation_admissibility("Sources/main.swift", swift, 2).admissible
+    assert citation_admissibility("Sources/main.swift", swift, 3).admissible
     assert mask_lead_comments(ruby, "src/app.rb") == ruby
     assert "credential_access" in {f["category"] for f in _decisive("src/app.rb", ruby)}
+
+
+_READ_KEY = 'read("/root/.ssh/id_rsa")'
+
+
+def test_the_maintainers_swift_comment_is_not_a_decisive_finding() -> None:
+    """Both roles of each finding cited the inline comment."""
+    assert (
+        find_decisive_malicious_source(
+            [("Sources/main.swift", 'fn main() {} // read("/root/.ssh/id_rsa")\n')]
+        )
+        == []
+    )
+
+
+# Inline and whole-line comments in a C-comment language main's generic
+# scanner used to mask. Each raised credential_access and cross_user_access
+# from the comment alone; the same call as code still does.
+@pytest.mark.parametrize(
+    ("path", "inline", "whole", "code"),
+    [
+        pytest.param(
+            "Sources/main.swift",
+            f"func main() {{}} // {_READ_KEY}\n",
+            f"/**\n {_READ_KEY}\n */\nfunc main() {{}}\n",
+            f"let key = {_READ_KEY}\n",
+            id="swift",
+        ),
+    ],
+)
+def test_a_c_family_comment_is_not_a_decisive_finding(
+    path: str, inline: str, whole: str, code: str
+) -> None:
+    assert find_decisive_malicious_source([(path, inline)]) == []
+    assert find_decisive_malicious_source([(path, whole)]) == []
+    assert {f["category"] for f in find_decisive_malicious_source([(path, code)])} == {
+        "credential_access",
+        "cross_user_access",
+    }
+
+
+# swiftc builds each and the served process runs the command in the string,
+# ``//usr/bin/...`` line included. Strings are never masked, so the decisive
+# preflight still sees it.
+@pytest.mark.parametrize(
+    "literal",
+    [
+        pytest.param(
+            '"""\n//usr/bin/curl --unix-socket /var/run/docker.sock http://x/containers/json\n"""',
+            id="multi-line",
+        ),
+        pytest.param(
+            '#"curl --unix-socket /var/run/docker.sock http://x/containers/json // q"#',
+            id="raw",
+        ),
+    ],
+)
+def test_a_served_swift_process_running_a_string_is_found(literal: str) -> None:
+    source = (
+        "import Foundation\n"
+        f"let script = {literal}\n"
+        "let p = Process()\n"
+        'p.executableURL = URL(fileURLWithPath: "/bin/sh")\n'
+        'p.arguments = ["-c", script]\n'
+        "try p.run()\n"
+    )
+
+    assert "malicious_build" in {
+        f["category"] for f in _decisive("Sources/main.swift", source)
+    }
 
 
 def test_the_decisive_preflight_reads_inner_cfg_test_code() -> None:
@@ -1024,7 +1104,7 @@ def test_python_that_does_not_tokenize_still_masks_hash_comments() -> None:
         ("lib/main.dart", "dart"),
         ("public/index.php", "php"),
         ("src/main.zig", "zig"),
-        ("Sources/main.swift", None),
+        ("Sources/main.swift", "swift"),
         ("src/Main.scala", None),
         ("docker/Dockerfile.dev", "dockerfile"),
         ("build/app.dockerfile", "dockerfile"),
@@ -1353,7 +1433,7 @@ def test_masking_never_raises_and_only_blanks_on_arbitrary_text() -> None:
         pytest.param("lib/a.dart", "'${" * 50_000, id="dart-open-fields"),
         pytest.param("src/a.php", "<?php " + '"$a' * 60_000, id="php-fields"),
         pytest.param("src/main.zig", "'\\" * 100_000, id="zig-escapes"),
-        pytest.param("src/a.swift", "/*\n" * 50_000, id="unlexed-block-openers"),
+        pytest.param("src/a.m", "/*\n" * 50_000, id="unlexed-block-openers"),
     ],
 )
 def test_crafted_sources_lex_in_linear_time(path: str, source: str) -> None:
