@@ -4787,11 +4787,23 @@ def _trusted_starter_digests(
 ) -> dict[str, frozenset[str]]:
     """Map each starter path to every exact sha256 a runtime manifest pins.
 
-    Trust is exact path plus digest only; there is no near or fuzzy match.
+    Trust is exact path plus digest only; there is no near or fuzzy match. A
+    manifest set that cannot be read or parsed grants no trust at all, as the
+    starter-model accounting does, so every file is scanned as the miner's.
+    The L1 provenance block still fails such a set with ``provenance-invalid``.
     """
     trusted: dict[str, set[str]] = {}
     for manifest_path in _starter_manifest_paths(override):
-        files = _load_provenance_manifest(Path(manifest_path))["files"]
+        try:
+            manifest = _load_provenance_manifest(Path(manifest_path))
+        except (OSError, ValueError) as error:
+            logger.warning(
+                "starter provenance manifests are unreadable (%s); "
+                "granting no starter trust",
+                type(error).__name__,
+            )
+            return {}
+        files = manifest["files"]
         assert isinstance(files, dict)
         for path, digest in files.items():
             assert isinstance(path, str) and isinstance(digest, str)
