@@ -22654,6 +22654,7 @@ export interface components {
             public_reason?: string | null;
             /** Reason Code */
             reason_code?: string | null;
+            review_outcome?: components["schemas"]["MinerScreeningReviewOutcome"] | null;
             /**
              * Started At
              * Format: date-time
@@ -22675,6 +22676,27 @@ export interface components {
             attempts: components["schemas"]["MinerScreeningFailure"][];
             /** Miner Hotkey */
             miner_hotkey: string;
+        };
+        /**
+         * MinerScreeningReviewOutcome
+         * @description Bounded source-review outcome for the submitter of one attempt.
+         *
+         *     Deliberately two closed enums and nothing else. The notes ledger, cited
+         *     ``path:line`` locations, breached invariant, published clear clause, court
+         *     reason text, and refusal code stay operator-side: together they describe
+         *     what the screener inspects, so they are not part of the miner contract.
+         */
+        MinerScreeningReviewOutcome: {
+            /**
+             * Next Step
+             * @enum {string}
+             */
+            next_step: "none" | "await_operator_review" | "resubmit_after_fix" | "contact_operators";
+            /**
+             * Outcome
+             * @enum {string}
+             */
+            outcome: "cleared" | "rejected" | "held_for_operator_review";
         };
         /** MinerSessionView */
         MinerSessionView: {
