@@ -311,6 +311,7 @@ _SOURCE_REVIEW_FAILURE_CODES: Mapping[str, str] = {
     "source archive contains a non-canonical path": "archive-invalid",
     "source archive contains a duplicate path": "archive-invalid",
     "provenance file could not be read": "archive-invalid",
+    "source archive changed during review": "archive-invalid",
     "static preflight mode must be off, shadow, or enforce": "detector-config-invalid",
     "max_completion_request_seconds must be finite and positive": (
         "request-timeout-config-invalid"
