@@ -618,13 +618,15 @@ items. Source text cannot prove either unserved: a runtime-loaded path, a base
 image, or a computed build value can serve them without any text the archive
 shows.
 
-Leads, fingerprints, and category guards match roles outside comments, read
-by each file's language. Where no lexer covers the language (Swift, Ruby,
-Lua, and the like) or the lexer leaves the file unmasked, they skip whole
+Leads, fingerprints, category guards, and the decisive preflight match roles
+outside comments, read by each file's language. Where no lexer covers the language (Ruby, Lua, and the like) or the lexer
+leaves the file unmasked, leads, fingerprints, and category guards skip whole
 comment lines by that language's markers instead. That can also skip a line
-of a multi-line string, so it is used only where a miss costs a lead: the
-decisive preflight, static proofs, and citation admissibility read the file
-whole.
+of a multi-line string, so it is used only where a miss costs a lead. The
+decisive preflight never guesses: where a lexer cannot finish a file, it
+still masks the comments in the longest prefix the lexer proves, and reads
+the rest, and any file no lexer covers, whole. Citation admissibility and
+static proofs likewise read an unlexed file whole.
 
 The following are insufficient on their own:
 

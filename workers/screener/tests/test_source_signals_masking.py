@@ -21,6 +21,7 @@ from ditto_screener.source_signals import (
     find_source_review_leads,
     mask_comments,
     mask_lead_comments,
+    mask_proven_comments,
     mask_string_literals,
 )
 
@@ -728,6 +729,37 @@ def test_a_served_swift_process_running_a_string_is_found(literal: str) -> None:
     assert "malicious_build" in {
         f["category"] for f in _decisive("Sources/main.swift", source)
     }
+
+
+# The lexer gives up at a construct it cannot decide (a Swift ``/`` that may
+# open a regular expression, a Scala XML literal). Comments before it are
+# still proven and masked; one after it keeps its finding, since no reading
+# of the rest is proven.
+@pytest.mark.parametrize(
+    ("path", "undecidable"),
+    [
+        pytest.param("Sources/main.swift", "let r = /a b/\n", id="swift-regex"),
+        pytest.param("src/Main.scala", "object X { val x = <a/> }\n", id="scala-xml"),
+    ],
+)
+def test_comments_before_an_undecidable_construct_are_still_proven(
+    path: str, undecidable: str
+) -> None:
+    comment = f"// {_READ_KEY}\n"
+
+    assert mask_comments(comment + undecidable, path) == comment + undecidable
+    assert find_decisive_malicious_source([(path, comment + undecidable)]) == []
+    assert find_decisive_malicious_source([(path, undecidable + comment)]) != []
+
+
+def test_proven_comments_cover_only_the_prefix_that_lexes() -> None:
+    source = "// a\nlet r = /x y/ // b\n// c\n"
+
+    assert mask_proven_comments(source, "Sources/main.swift", [1]) == (
+        "    \nlet r = /x y/ // b\n// c\n"
+    )
+    assert mask_proven_comments(source, "Sources/main.swift", [3]) == source
+    assert mask_proven_comments(source, "src/app.rb", [1]) == source
 
 
 def test_the_decisive_preflight_reads_inner_cfg_test_code() -> None:

@@ -11,11 +11,13 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass
+from typing import cast
 
 from ditto_screener.rust_test_items import test_only_item_lines
 from ditto_screener.source_masking import (
     mask_comments,
     mask_lead_comments,
+    mask_proven_comments,
     mask_string_literals,
 )
 
@@ -1832,58 +1834,81 @@ def find_decisive_malicious_source(
             )
             if test_item_lines:
                 text = "\n".join(_blank_lines(lines, test_item_lines))
-        # Three views of the same file, each with a different job:
-        #   ``comment_masked`` — comments gone, string literals intact. Target
-        #     roles (paths, secret names) live inside string literals.
-        #   ``executable_lines`` — comments and strings gone. Effect roles must
-        #     be real operations, not words inside a prompt literal.
-        #   ``lines`` — raw, used only to report the location back.
         comment_masked_text = mask_comments(text, path)
-        comment_masked = comment_masked_text.splitlines()
-        comment_masked.extend([""] * (len(lines) - len(comment_masked)))
-        executable_lines = mask_string_literals(comment_masked_text, path).splitlines()
-        executable_lines.extend([""] * (len(lines) - len(executable_lines)))
-        for rule in _STATIC_MALICIOUS_RULES:
-            role_hits = {
-                role.name: [
-                    line_number
-                    for line_number, line in enumerate(comment_masked, 1)
-                    if role.pattern.search(
-                        _static_role_search_text(
-                            role.name,
-                            line[:4096],
-                            executable_lines[line_number - 1][:4096],
-                        )
-                    )
-                    and line.strip()
-                ]
-                for role in rule.roles
+        file_findings = _static_findings(path, lines, comment_masked_text)
+        if file_findings and comment_masked_text == text:
+            # No lexer masked this file. Where one lexes a prefix of it, that
+            # prefix is exact, so a comment there cannot carry a finding;
+            # everything after it is still read as code.
+            cited = {
+                location["line"]
+                for finding in file_findings
+                for location in cast(list[dict[str, int]], finding["locations"])
             }
-            if any(not hits for hits in role_hits.values()):
-                continue
-            for anchor in sorted(
-                {line for hits in role_hits.values() for line in hits}
-            ):
-                locations: list[dict[str, object]] = []
-                for role in rule.roles:
-                    nearby = min(
-                        role_hits[role.name],
-                        key=lambda line: (abs(line - anchor), line),
+            proven = mask_proven_comments(text, path, cited)
+            if proven != text:
+                file_findings = _static_findings(path, lines, proven)
+        for finding in file_findings:
+            if finding not in findings:
+                findings.append(finding)
+                if len(findings) >= _MAX_STATIC_FINDINGS:
+                    return findings
+    return findings
+
+
+def _static_findings(
+    path: str, lines: list[str], comment_masked_text: str
+) -> list[dict[str, object]]:
+    """Pair target and effect roles in one file's views.
+
+    ``comment_masked_text`` has comments gone and string literals intact:
+    target roles (paths, secret names) live inside string literals. Its
+    string-masked form drops literals too, since effect roles must be real
+    operations, not words inside a prompt literal. ``lines`` is the raw text,
+    used only to report locations.
+    """
+    findings: list[dict[str, object]] = []
+    comment_masked = comment_masked_text.splitlines()
+    comment_masked.extend([""] * (len(lines) - len(comment_masked)))
+    executable_lines = mask_string_literals(comment_masked_text, path).splitlines()
+    executable_lines.extend([""] * (len(lines) - len(executable_lines)))
+    for rule in _STATIC_MALICIOUS_RULES:
+        role_hits = {
+            role.name: [
+                line_number
+                for line_number, line in enumerate(comment_masked, 1)
+                if role.pattern.search(
+                    _static_role_search_text(
+                        role.name,
+                        line[:4096],
+                        executable_lines[line_number - 1][:4096],
                     )
-                    if abs(nearby - anchor) > _WINDOW_LINES:
-                        break
-                    locations.append({"path": path, "line": nearby, "role": role.name})
-                else:
-                    finding: dict[str, object] = {
-                        "category": rule.category,
-                        "kind": rule.kind,
-                        "locations": locations,
-                    }
-                    if finding not in findings:
-                        findings.append(finding)
+                )
+                and line.strip()
+            ]
+            for role in rule.roles
+        }
+        if any(not hits for hits in role_hits.values()):
+            continue
+        for anchor in sorted({line for hits in role_hits.values() for line in hits}):
+            locations: list[dict[str, object]] = []
+            for role in rule.roles:
+                nearby = min(
+                    role_hits[role.name],
+                    key=lambda line: (abs(line - anchor), line),
+                )
+                if abs(nearby - anchor) > _WINDOW_LINES:
                     break
-            if len(findings) >= _MAX_STATIC_FINDINGS:
-                return findings
+                locations.append({"path": path, "line": nearby, "role": role.name})
+            else:
+                finding: dict[str, object] = {
+                    "category": rule.category,
+                    "kind": rule.kind,
+                    "locations": locations,
+                }
+                if finding not in findings:
+                    findings.append(finding)
+                break
     return findings
 
 
@@ -2270,6 +2295,7 @@ __all__ = [
     "is_executable_source_path",
     "mask_comments",
     "mask_lead_comments",
+    "mask_proven_comments",
     "mask_remote_urls",
     "mask_string_literals",
     "source_path_priority",

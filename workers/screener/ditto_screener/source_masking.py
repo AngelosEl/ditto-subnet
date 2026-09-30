@@ -31,7 +31,7 @@ import bisect
 import re
 import tokenize
 import warnings
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from functools import lru_cache, partial
 
 __all__ = [
@@ -39,6 +39,7 @@ __all__ = [
     "language_for_path",
     "mask_comments",
     "mask_lead_comments",
+    "mask_proven_comments",
     "mask_python_code",
     "mask_rust_literals",
     "mask_string_literals",
@@ -160,6 +161,34 @@ _SHEBANG_LANGUAGES = frozenset(
         "fsharp",
     }
 )
+# Lexers that read left to right and look ahead no further than the end of
+# the current line, so any prefix that lexes on its own is masked as the whole
+# file is: the decisive preflight keeps their comments masked where the whole
+# file cannot be lexed. The Python fallback is approximate, and the
+# hash-comment languages were never masked before, so they are not listed.
+_PREFIX_EXACT_LANGUAGES = frozenset(
+    {
+        "rust",
+        "go",
+        "c",
+        "javascript",
+        "typescript",
+        "java",
+        "kotlin",
+        "csharp",
+        "dart",
+        "php",
+        "zig",
+        "swift",
+        "scala",
+        "groovy",
+        "fsharp",
+    }
+)
+_MAX_PROOF_CUTS = 16
+# Line boundaries as ``str.splitlines`` finds them, so ``lines`` numbering
+# matches every scanner's.
+_SPLITLINES_BREAK = re.compile(r"\r\n|[\n\r\x0b\x0c\x1c-\x1e\x85\u2028\u2029]")
 
 
 def language_for_path(path: str) -> str | None:
@@ -212,6 +241,42 @@ def mask_lead_comments(text: str, path: str) -> str:
     if family is None or not text:
         return text
     return _blank_comment_lines(text, family)
+
+
+def mask_proven_comments(text: str, path: str, lines: Iterable[int]) -> str:
+    """Blank the comments an exact lexer can prove, even in a file it cannot end.
+
+    For a file its lexer masks this is ``mask_comments``. Where the lexer
+    gives up (a Swift ``/`` that may open a regular expression, a Scala XML
+    literal, ...), comments are still blanked in the longest prefix that
+    lexes on its own, cut after a line feed that follows one of ``lines``
+    (1-based). These lexers read left to right and look ahead no further than
+    the end of the current line, so such a prefix ends outside every literal
+    and comment and is masked exactly as the whole file would be; the rest is
+    left as it is. A language without such a lexer is returned unchanged.
+    """
+    language = language_for_path(path)
+    if language is None or not text:
+        return text
+    kinds = _cached_kinds(text, language)
+    if kinds is not None:
+        return _blank(text, kinds, _COMMENT)
+    if language not in _PREFIX_EXACT_LANGUAGES:
+        return text
+    starts = [0]
+    for match in _SPLITLINES_BREAK.finditer(text):
+        starts.append(match.end())
+    for line in sorted(set(lines), reverse=True)[:_MAX_PROOF_CUTS]:
+        if not 1 <= line < len(starts):
+            continue
+        cut = text.find("\n", starts[line] - 1)
+        if cut < 0:
+            continue
+        prefix = text[: cut + 1]
+        prefix_kinds = _cached_kinds(prefix, language)
+        if prefix_kinds is not None:
+            return _blank(prefix, prefix_kinds, _COMMENT) + text[cut + 1 :]
+    return text
 
 
 def mask_string_literals(text: str, path: str) -> str:
