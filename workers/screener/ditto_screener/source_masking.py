@@ -833,7 +833,7 @@ def _python_fallback(text: str) -> bytearray | None:
 # --- Shell --------------------------------------------------------------------
 
 _SH_TOKEN = re.compile(
-    r"\\[\s\S]|#|\$'|\$\(|\$\{|['\"`(){}]|<<-?|\n"
+    r"\\[\s\S]|#|\$'|\$\(\(|\$\(|\$\{|\$\[|\(\(|['\"`(){}]|<<-?|\n"
     r"|(?<![^\s;&|(])(?:case|esac)(?![^\s;&|)])"
 )
 _SH_WORD_BREAK = frozenset(" \t\n;&|()<>")
@@ -844,22 +844,30 @@ _SH_ANSI_C = _quoted("'")
 
 
 class _ShellFrame:
-    __slots__ = ("case", "depth", "kind", "quoted")
+    __slots__ = ("depth", "kind", "quoted")
 
     def __init__(self, kind: str, *, quoted: bool = False) -> None:
-        self.kind = kind  # "top", "cmd" ($(...)), "dq", "bt" (`...`), "param"
+        # "top", "cmd" ($(...)), "dq", "bt" (`...`), "param" (${...}), and
+        # "arith" ($((...)) and ((...)), where ``<<`` shifts and ``#`` is text).
+        self.kind = kind
         self.depth = 0
-        self.case = 0
         self.quoted = quoted
 
 
 def _lex_shell(text: str) -> bytearray | None:
     """POSIX/bash: ``#`` starts a comment only at the start of an unquoted word.
 
-    Quotes, ``$(...)``, backticks, ``${...}`` (where ``#`` is an operator) and
-    here-document bodies are tracked so a ``#`` inside any of them is never
-    read as a comment. Here-document bodies are left verbatim: they are often
-    the script that actually runs.
+    Quotes, ``$(...)``, backticks, ``${...}`` (where ``#`` is an operator),
+    arithmetic (where ``<<`` is a shift) and here-document bodies are tracked
+    so a ``#`` inside any of them is never read as a comment. Here-document
+    bodies are left verbatim: they are often the script that actually runs.
+
+    bash parses and runs a script one command at a time, so text after an
+    ``exit`` can rebalance any quote or bracket this lexer tracks without ever
+    running. Where the lexer cannot tell how bash reads a construct (``$[``,
+    ``<<`` inside an assignment subscript, a ``case`` word inside ``$(...)``,
+    ``$((`` that turns out to hold a subshell), the file is left unmasked
+    rather than guessed at.
     """
     kinds = bytearray(len(text))
     frames = [_ShellFrame("top")]
@@ -872,9 +880,14 @@ def _lex_shell(text: str) -> bytearray | None:
         if value.startswith("\\"):
             index = end
             continue
+        if value == "$[":
+            # Legacy arithmetic: ``<<`` inside it is a shift.
+            return None
         if frame.kind == "dq":
             if value == '"':
                 frames.pop()
+            elif value == "$((":
+                frames.append(_ShellFrame("arith"))
             elif value == "$(":
                 frames.append(_ShellFrame("cmd"))
             elif value == "${":
@@ -897,6 +910,8 @@ def _lex_shell(text: str) -> bytearray | None:
             if body is None:
                 return None
             end = body.end()
+        elif value == "$((":
+            frames.append(_ShellFrame("arith"))
         elif value == "$(":
             frames.append(_ShellFrame("cmd"))
         elif value == "${":
@@ -916,6 +931,23 @@ def _lex_shell(text: str) -> bytearray | None:
                     frames.pop()
             else:
                 end = start + 1
+        elif frame.kind == "arith":
+            if value in {"(", "(("}:
+                frame.depth += len(value)
+            elif value == ")":
+                if frame.depth:
+                    frame.depth -= 1
+                elif text.startswith(")", end):
+                    frames.pop()
+                    end += 1
+                else:
+                    # ``$((cmd) )`` is a command substitution holding a
+                    # subshell after all.
+                    return None
+            else:
+                end = start + 1
+        elif value == "((":
+            frames.append(_ShellFrame("arith"))
         elif value == "#":
             if _sh_word_start(text, start):
                 end = _line_end(text, start, _LF)
@@ -928,15 +960,19 @@ def _lex_shell(text: str) -> bytearray | None:
         elif value == ")":
             if frame.depth:
                 frame.depth -= 1
-            elif frame.kind == "cmd" and not frame.case:
+            elif frame.kind == "cmd":
                 frames.pop()
-        elif value == "case":
-            frame.case += 1
-        elif value == "esac":
-            frame.case = max(0, frame.case - 1)
+        elif value in {"case", "esac"}:
+            if frame.kind == "cmd":
+                # A pattern's ``)`` does not close ``$(``, but a ``case`` word
+                # may also be an argument (``$(echo case)``).
+                return None
         elif value.startswith("<<"):
             if text.startswith("<", end):
                 end += 1
+            elif _sh_in_subscript(text, start):
+                # ``a[1<<2]=x`` shifts inside an assignment subscript.
+                return None
             else:
                 word = _SH_HEREDOC_WORD.match(text, end)
                 if word is not None:
@@ -949,6 +985,15 @@ def _lex_shell(text: str) -> bytearray | None:
             heredocs.clear()
         index = end
     return kinds if len(frames) == 1 else None
+
+
+def _sh_in_subscript(text: str, index: int) -> bool:
+    """Whether ``text[index]`` follows an unclosed ``[`` in the same word."""
+    word_start = index
+    while word_start > 0 and text[word_start - 1] not in _SH_WORD_BREAK:
+        word_start -= 1
+    word = text[word_start:index]
+    return word.count("[") > word.count("]")
 
 
 def _sh_word_start(text: str, index: int) -> bool:

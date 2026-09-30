@@ -448,6 +448,57 @@ def test_shell_quoting_and_escapes_cannot_hide_code(source: str) -> None:
     assert mask_comments(source, "scripts/run.sh") == source
 
 
+# bash runs every one of these and calls hidden: the ``<<`` is a shift, not a
+# here-document, so the quote on the next line opens a string and the ``#``
+# line is inside it. Reading a here-document skips that quote and turns the
+# executed line into a comment.
+@pytest.mark.parametrize(
+    ("head", "delimiter"),
+    [
+        pytest.param("x=$(( 1 << 2 ))", "2", id="arithmetic-expansion"),
+        pytest.param('echo "$((1<<2))"', "2", id="arithmetic-in-quotes"),
+        pytest.param("(( a = 1 << 2 ))", "2", id="arithmetic-command"),
+        pytest.param("for ((i = 0; i < (1 << 2); i++)); do :; done", "2", id="for"),
+        pytest.param("x=$[1<<2]", "2]", id="legacy-arithmetic"),
+        pytest.param("a[1<<2]=3", "2]=3", id="array-subscript"),
+    ],
+)
+def test_shell_shift_is_not_a_here_document(head: str, delimiter: str) -> None:
+    source = f'{head}\ny="\n{delimiter}\n# " ; hidden\nz="\n"\n'
+
+    assert "; hidden" in mask_comments(source, "scripts/run.sh")
+
+
+def test_a_case_argument_cannot_hold_a_command_substitution_open() -> None:
+    """``echo case`` is an argument; bash closes ``$(`` at the first ``)``.
+
+    bash runs line 1 before it would parse anything after ``exit``, so text
+    there can rebalance a lexer's quotes and parentheses without running.
+    """
+    source = (
+        'x="$(echo case)# "; hidden\nexit 0\ncase esac in esac) true;; esac\ntrue # "\n'
+    )
+
+    assert "; hidden" in mask_comments(source, "scripts/run.sh")
+
+
+@pytest.mark.parametrize(
+    ("source", "comments"),
+    [
+        ("cat <<EOF\n# body\nEOF\necho hi # c\n", ("# c",)),
+        ("cat<<EOF >out\n# body\nEOF\n# c\n", ("# c",)),
+        ("echo $(( 16#ff )) $(( (1 + 2) * 3 )) # c\n", ("# c",)),
+        ("(( x = 1 << 2 )) # c\n", ("# c",)),
+        ("x=$(cat <<EOF\n# body\nEOF\n) # c\n", ("# c",)),
+        ('case $1 in\n  a) echo "#" ;; # c\nesac\n', ("# c",)),
+    ],
+)
+def test_shell_here_documents_and_arithmetic_keep_their_masking(
+    source: str, comments: tuple[str, ...]
+) -> None:
+    assert mask_comments(source, "scripts/run.sh") == _blank(source, *comments)
+
+
 @pytest.mark.parametrize(
     ("path", "source"),
     [
