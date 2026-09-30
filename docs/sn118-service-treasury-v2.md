@@ -76,7 +76,14 @@ identified holding coldkey:
 
 The collector hotkey must be registered on SN118 and independently verified
 as owned by the collector coldkey, distinct from the subnet owner's burn
-hotkey. Each holding coldkey must be independently controlled and distinct
+hotkey. The collector coldkey must also be distinct from the subnet-owner
+coldkey, and finalized chain state must establish that the collector hotkey
+is not owner-associated. A different hotkey under the same owner coldkey is
+insufficient: [Bittensor's mining contract](https://www.bittensor.com/docs/guides/mining)
+burns or recycles miner emission directed to owner-associated hotkeys.
+The shadow settings do not prove this relationship; it is a mandatory
+registration/ownership check in the future live weight adapter.
+Each holding coldkey must be independently controlled and distinct
 from the collector and the other holders. A wallet label or SS58 address alone
 does not prove custody. Signing keys need separate access scopes; Platform and
 Backroom retain no signing authority. The current single-key signer cannot
