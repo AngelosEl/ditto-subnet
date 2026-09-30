@@ -346,6 +346,14 @@ def _lex_go(text: str) -> bytearray | None:
 
 
 _C_SPLICE = re.compile(r"\\(?:\r\n|\n|\r)")
+# A trigraph (``??/`` is a backslash, ``??'`` a caret) moves where literals and
+# splices end for a compiler that honors them, as ``gcc -std=c11`` does.
+_C_TRIGRAPH = re.compile(r"\?\?[=/'()!<>-]")
+# A header name is one token: ``#include <x/*y.h>`` opens no comment, and a
+# comment may sit between ``#`` and ``include``.
+_C_UNSAFE_HEADER_NAME = re.compile(
+    r"(?:include(?:_next)?|import|__has_include(?:_next)?)[^\n<]*<[^>\n]*(?:/[/*]|['\"\\])"
+)
 # A pp-number (``1'000'000``, ``0x1'F``, ``1e+5``) is consumed whole, so a C++14
 # digit separator is never mistaken for a character literal.
 _C_TOKEN = re.compile(
@@ -356,7 +364,13 @@ _CPP_RAW_DELIMITER = re.compile(r"([^\s()\\]{0,16})\(")
 
 
 def _lex_c(text: str) -> bytearray | None:
-    """C/C++: lexed after line splicing, so ``*\\<newline>/`` closes a comment."""
+    """C/C++: lexed after line splicing, so ``*\\<newline>/`` closes a comment.
+
+    A trigraph, or a header name holding comment or quote characters, leaves
+    the file unmasked.
+    """
+    if _C_TRIGRAPH.search(text):
+        return None
     if "\\" not in text or _C_SPLICE.search(text) is None:
         return _lex_c_logical(text)
     pieces: list[str] = []
@@ -391,6 +405,8 @@ def _lex_c(text: str) -> bytearray | None:
 
 
 def _lex_c_logical(text: str) -> bytearray | None:
+    if _C_UNSAFE_HEADER_NAME.search(text):
+        return None
     kinds = bytearray(len(text))
     index = 0
     while (token := _C_TOKEN.search(text, index)) is not None:
@@ -1244,11 +1260,17 @@ def _lex_yaml(text: str) -> bytearray | None:
 
     Quotes only open a scalar where a scalar may begin, so ``it's`` in a plain
     scalar is text. Block scalars (``run: |``) are left verbatim: their lines
-    are content, often a script, never YAML comments.
+    are content, often a script, never YAML comments. A quote that begins a
+    line may instead continue the previous line's plain scalar (``a: plain``
+    then ``  'x``), where it is literal; if it would stay open past its line,
+    the file is left unmasked rather than inverting every later quote.
     """
     kinds = bytearray(len(text))
     quote = ""
     block_indent: int | None = None
+    plain_open = False
+    # Open ``[``/``{`` collections: only inside one is ``,`` an indicator.
+    flow = 0
     for start, raw in _lf_lines(text):
         line = raw.removesuffix("\r")
         indent = len(line) - len(line.lstrip(" "))
@@ -1259,8 +1281,13 @@ def _lex_yaml(text: str) -> bytearray | None:
             elif not line.strip() or indent > block_indent:
                 continue
             block_indent = None
+            plain_open = False
+        continuing = not quote and plain_open and line.lstrip(" \t")[:1] in "'\""
         scalar_start = True
         comment = len(line)
+        # What the line's last token was: "plain" scalar text, a "quoted"
+        # scalar or closed collection, or an "indicator" awaiting a value.
+        last = ""
         cursor = 0
         while cursor < len(line):
             char = line[cursor]
@@ -1274,6 +1301,7 @@ def _lex_yaml(text: str) -> bytearray | None:
                         continue
                     quote = ""
                     scalar_start = False
+                    last = "quoted"
                 cursor += 1
                 continue
             if char == "#" and (cursor == 0 or line[cursor - 1] in " \t"):
@@ -1283,35 +1311,60 @@ def _lex_yaml(text: str) -> bytearray | None:
                 pass
             elif char in "'\"" and scalar_start:
                 quote = char
-            elif char in "[{," or (
+            elif char in "[{" and scalar_start:
+                flow += 1
+                last = "indicator"
+            elif char in "]}" and flow:
+                flow -= 1
+                scalar_start = False
+                last = "quoted"
+            elif (char == "," and flow) or (
                 char in "-?:" and (cursor + 1 == len(line) or line[cursor + 1] in " \t")
             ):
                 scalar_start = True
+                last = "indicator"
             elif char in "&!" and scalar_start:
                 while cursor + 1 < len(line) and line[cursor + 1] not in " \t":
                     cursor += 1
+                last = "indicator"
             else:
                 scalar_start = False
+                last = "plain"
             cursor += 1
+        if continuing and quote:
+            return None
         _mark(kinds, start + comment, start + len(line), _COMMENT)
         code = line[:comment].rstrip()
+        if quote:
+            plain_open = False
+        elif code.strip():
+            plain_open = last == "plain" and code.strip() not in {"---", "..."}
         if not quote and _YAML_BLOCK_SCALAR.search(code):
-            block_indent = -1 if _YAML_DOCUMENT_BLOCK.match(code) else indent
+            # An indicator alone on its line belongs to a parent at some lower
+            # indentation, possibly the document itself, which bounds the body.
+            standalone = _YAML_DOCUMENT_BLOCK.match(code.lstrip(" \t"))
+            block_indent = -1 if standalone else indent
+            plain_open = False
     return None if quote else kinds
 
 
 _MAKE_REFERENCE_CLOSE = {"(": ")", "{": "}"}
 _MAKE_DEFINE = re.compile(r"^\s*(?:(?:override|export)\s+)*define\b")
 _MAKE_ENDEF = re.compile(r"^\s*endef\b")
+_MAKE_RECIPE_PREFIX = re.compile(r"\.RECIPEPREFIX\b")
 
 
-def _lex_make(text: str) -> bytearray:
+def _lex_make(text: str) -> bytearray | None:
     """Make: ``#`` outside recipes, ``define`` bodies, and ``$(...)`` calls.
 
     Make does not honor quotes, so a ``#`` in ``VAR = "a # b"`` is a comment,
     but within a variable reference or function call it is literal. Recipe
-    lines belong to the shell and are left verbatim.
+    lines belong to the shell and are left verbatim, including a recipe after
+    ``;`` on a rule line. ``.RECIPEPREFIX`` changes which lines are recipes,
+    so a file that sets it is left unmasked.
     """
+    if _MAKE_RECIPE_PREFIX.search(text):
+        return None
     kinds = bytearray(len(text))
     references: list[str] = []
     defines = 0
@@ -1357,6 +1410,10 @@ def _lex_make(text: str) -> bytearray:
                 # next line is left visible rather than guessed at.
                 _mark(kinds, start + cursor, start + len(line), _COMMENT)
                 continued = False
+                break
+            elif char == ";":
+                # On a rule line the rest, and its continuations, is recipe.
+                recipe = True
                 break
             cursor += 1
     return kinds

