@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.330.13 (2026-09-30)
+
+### Bug Fixes
+
+- **screener**: Require signed I5 causal proof for V13
+  ([#2583](https://github.com/ditto-assistant/ditto-subnet/pull/2583),
+  [`98c0ae2`](https://github.com/ditto-assistant/ditto-subnet/commit/98c0ae282f9bbbec0577da6c6bd5896543037109))
+
+
 ## v0.330.12 (2026-09-30)
 
 ### Bug Fixes
