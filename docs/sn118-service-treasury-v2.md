@@ -25,6 +25,22 @@ revisioned policy. No service bucket may borrow another bucket's allocation.
 
 ## Wallet identity and custody
 
+**Custody design still needs review before the active weight path is built.**
+This draft models one registered hotkey per service wallet. A simpler
+alternative is one registered collector hotkey and three separately controlled
+holding coldkeys. Validators would route only the reviewed aggregate service
+share to the collector. After finality, a guarded, reconciled
+[`transfer_stake`](https://github.com/latent-to/developer-docs/blob/main/docs/navigating-subtensor/subtensor-extrinsics.md)
+could move each bucket's SN118 stake from the collector coldkey to its holding
+coldkey while retaining the same hotkey. This would give each service a distinct
+on-chain balance without adding three emission recipients or occupying three
+registration slots. It introduces a collector custody window and requires
+exactly-once sweep accounting, independent signer review, and a tested rollback.
+Holding SN118 stake is not the same as a spendable TAO balance; a provider
+payment would need a separate reviewed conversion and transfer.
+The current shadow schema describes the direct-recipient option only; it must
+be revised or explicitly approved before any validator implementation.
+
 Each purpose gets its own dedicated, publicly identified receiving wallet:
 
 | Bucket | Purpose | Initial bps | Receiving wallet | Spend destination |
