@@ -150,12 +150,12 @@ class V7InferenceCalibration(BaseModel):
         return self
 
 
-class ScoredRuntimeEnvEvidence(BaseModel):
-    """Keys reported by a descriptor-verified scorer for its V13 sandbox."""
+class _ScoredRuntimeEnvEvidenceBase(BaseModel):
+    """Digest-bound scorer environment keys; each subclass pins one version."""
 
     model_config = ConfigDict(extra="ignore", frozen=True, strict=True)
 
-    bench_version: Literal[13]
+    bench_version: int
     scope: Literal["scorer-injected-env-only"]
     source_revision: Annotated[str, Field(pattern=_REVISION_PATTERN)]
     injected_keys: Annotated[
@@ -167,7 +167,7 @@ class ScoredRuntimeEnvEvidence(BaseModel):
     sha256: Annotated[str, Field(pattern=_SHA256_PATTERN)]
 
     @model_validator(mode="after")
-    def digest_matches_keys(self) -> ScoredRuntimeEnvEvidence:
+    def digest_matches_keys(self) -> _ScoredRuntimeEnvEvidenceBase:
         if (
             not self.injected_keys
             or tuple(sorted(set(self.injected_keys))) != self.injected_keys
@@ -176,7 +176,7 @@ class ScoredRuntimeEnvEvidence(BaseModel):
                 "scorer injected keys must be nonempty, sorted, and unique"
             )
         material = (
-            "scored-runtime-env-v1\n13\n"
+            f"scored-runtime-env-v1\n{self.bench_version}\n"
             + self.source_revision
             + "\n"
             + "\n".join(self.injected_keys)
@@ -184,6 +184,23 @@ class ScoredRuntimeEnvEvidence(BaseModel):
         if hashlib.sha256(material.encode()).hexdigest() != self.sha256:
             raise ValueError("scorer injected environment digest mismatch")
         return self
+
+
+class ScoredRuntimeEnvEvidence(_ScoredRuntimeEnvEvidenceBase):
+    """Keys reported by a descriptor-verified scorer for its V13 sandbox."""
+
+    bench_version: Literal[13]
+
+
+class V14ScoredRuntimeEnvEvidence(_ScoredRuntimeEnvEvidenceBase):
+    """Keys reported by a descriptor-verified scorer for its v14 sandbox.
+
+    A separate type pins each capability slot to its version, so neither the
+    model nor the published schema accepts one version's packet in the other's
+    slot.
+    """
+
+    bench_version: Literal[14]
 
 
 class ScorerBenchmarkCapability(BaseModel):
@@ -197,6 +214,9 @@ class ScorerBenchmarkCapability(BaseModel):
     software_version: Annotated[str | None, Field(pattern=_VERSION_PATTERN)] = None
     source_revision: Annotated[str | None, Field(pattern=_REVISION_PATTERN)] = None
     scored_runtime_env: ScoredRuntimeEnvEvidence | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
+    v14_scored_runtime_env: V14ScoredRuntimeEnvEvidence | None = Field(
         default=None, exclude_if=lambda value: value is None
     )
     v7_calibration: V7InferenceCalibration | None = None
@@ -220,6 +240,12 @@ class ScorerBenchmarkCapability(BaseModel):
             raise ValueError(
                 "scored runtime environment requires verified V13 identity"
             )
+        if self.v14_scored_runtime_env is not None and (
+            self.status != "fresh_verified"
+            or 14 not in versions
+            or self.source_revision != self.v14_scored_runtime_env.source_revision
+        ):
+            raise ValueError("v14 runtime environment requires verified v14 identity")
         if self.deterministic_v13_datasets and (
             self.status != "fresh_verified" or 13 not in versions
         ):

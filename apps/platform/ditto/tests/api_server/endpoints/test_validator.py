@@ -8025,6 +8025,58 @@ class TestSubmitScore:
         assert score_count == 3
         assert scored_ticket_count == 3
 
+    async def test_v14_go_packet_round_trips_through_signed_score_ingestion(
+        self,
+        app: FastAPI,
+        client: httpx.AsyncClient,
+        session_maker: async_sessionmaker[AsyncSession],
+    ) -> None:
+        vector_path = (
+            Path(__file__).resolve().parents[6]
+            / "services/dittobench-api/testdata/v14_base_contract_vector.json"
+        )
+        vector = json.loads(vector_path.read_text())
+        evidence = vector["details"]
+        overrides = {
+            "bench_version": 14,
+            "base_evidence_sha256": vector["base_evidence_sha256"],
+            "composite": evidence["effective_composite_micros"] / 1_000_000,
+            "composite_stderr": evidence["effective_stderr_micros"] / 1_000_000,
+            "n": evidence["score_gates"]["model_use"]["administered_cases"],
+            "details": {
+                "dataset_sha256": evidence["dataset_sha256"],
+                "transcript_sha256": evidence["transcript_sha256"],
+                "v9_base": evidence,
+            },
+        }
+        assert overrides["composite"] == 0.875
+        agent_id = await _seed_agent(
+            session_maker,
+            status=AgentStatus.EVALUATING,
+            sha256="a" * 64,
+            dataset_version=14,
+        )
+        await _seed_ticket(session_maker, agent_id, bench_version=14)
+        _install_db(app, session_maker)
+        _install_chain(app)
+        payload = _score_payload(agent_id, run_id="run-v14-vector", **overrides)
+        response = await client.post(
+            f"/api/v1/validator/agent/{agent_id}/score", json=payload
+        )
+        assert response.status_code == 200, response.text
+        async with session_maker() as session:
+            score = await session.get(Score, (agent_id, 14, _VALIDATOR_HOTKEY))
+            assert score is not None and score.details is not None
+            assert (
+                score.details["base_evidence_sha256"] == vector["base_evidence_sha256"]
+            )
+        # The exact packet and ticket version are signature-bound.
+        payload["report"]["bench_version"] = 13
+        response = await client.post(
+            f"/api/v1/validator/agent/{agent_id}/score", json=payload
+        )
+        assert response.status_code in (401, 409, 422), response.text
+
     async def test_accepts_digest_verified_v9_base_evidence_without_double_gate(
         self,
         app: FastAPI,
@@ -9726,7 +9778,10 @@ class TestTranscriptPublication:
         assert objects[None, key] == self._TRANSCRIPT
         assert ("ditto-public", key) not in objects
 
-    async def test_quorum_mirror_never_exposes_v13_transcript(self) -> None:
+    @pytest.mark.parametrize("bench_version", [13, 14])
+    async def test_quorum_mirror_never_exposes_v13_transcript(
+        self, bench_version: int
+    ) -> None:
         storage = MagicMock()
         storage.public_bucket = "ditto-public"
         storage.object_exists = AsyncMock()
@@ -9736,7 +9791,12 @@ class TestTranscriptPublication:
         await validator_endpoint._mirror_quorum_transcripts(
             storage,
             session,
-            [Score(bench_version=13, details={"transcript_sha256": self._digest})],
+            [
+                Score(
+                    bench_version=bench_version,
+                    details={"transcript_sha256": self._digest},
+                )
+            ],
         )
 
         session.scalar.assert_not_awaited()
@@ -9747,7 +9807,10 @@ class TestTranscriptPublication:
             session=session,
             agent=MagicMock(),
             scores=[
-                Score(bench_version=13, details={"transcript_sha256": self._digest})
+                Score(
+                    bench_version=bench_version,
+                    details={"transcript_sha256": self._digest},
+                )
             ],
             median=0.5,
             mirror_transcripts=True,
@@ -9776,7 +9839,7 @@ class TestTranscriptPublication:
             ],
         )
 
-        session.scalar.assert_awaited_once()
+        session.scalar.assert_not_awaited()
         storage.object_exists.assert_not_awaited()
 
         await validator_endpoint._publish_finalized_run(
@@ -9990,8 +10053,10 @@ class TestTranscriptPublication:
         assert response.status_code == 200
         assert storage.put_object.await_count == 1
 
+    @pytest.mark.parametrize("bench_version", [13, 14])
     async def test_v13_transcript_is_private_even_without_dataset_metadata(
         self,
+        bench_version: int,
         app: FastAPI,
         client: httpx.AsyncClient,
         session_maker: async_sessionmaker[AsyncSession],
@@ -10009,7 +10074,7 @@ class TestTranscriptPublication:
                 select(Score).where(Score.agent_id == agent_id)
             )
             assert score is not None
-            score.bench_version = 13
+            score.bench_version = bench_version
         response = await client.put(
             f"/api/v1/validator/agent/{agent_id}/transcript/run_t_0",
             content=self._TRANSCRIPT,
@@ -12301,7 +12366,7 @@ class TestTop5ConfirmationLane:
         assert {raw_cutoff, folded_entrant} <= cohort_ids
         assert len(cohort) == 6
 
-    @pytest.mark.parametrize("bench_version", [_BENCH_VERSION, 13])
+    @pytest.mark.parametrize("bench_version", [_BENCH_VERSION, 13, 14])
     async def test_stronger_same_owner_generation_can_catch_up_outside_raw_top_five(
         self,
         app: FastAPI,
@@ -12333,11 +12398,27 @@ class TestTop5ConfirmationLane:
             # support list even when the active scoring era is v13.
             for keypair in _KEYPAIRS:
                 capabilities = _scorer_capable_capabilities(
-                    now=datetime.now(UTC), versions=(7, bench_version)
+                    now=datetime.now(UTC),
+                    versions=(7, 13, 14) if bench_version == 14 else (7, bench_version),
                 )
                 scorer = capabilities["scorer_benchmarks"]
                 assert isinstance(scorer, dict)
                 scorer["deterministic_v13_datasets"] = True
+                if bench_version == 14:
+                    keys = ["BENCH_VERSION"]
+                    material = (
+                        "scored-runtime-env-v1\n14\n"
+                        + str(scorer["source_revision"])
+                        + "\n"
+                        + "\n".join(keys)
+                    )
+                    scorer["v14_scored_runtime_env"] = {
+                        "bench_version": 14,
+                        "scope": "scorer-injected-env-only",
+                        "source_revision": scorer["source_revision"],
+                        "injected_keys": keys,
+                        "sha256": hashlib.sha256(material.encode()).hexdigest(),
+                    }
                 await _seed_validator_heartbeat(
                     session_maker,
                     keypair=keypair,
