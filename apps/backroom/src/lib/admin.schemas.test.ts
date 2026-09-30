@@ -859,6 +859,8 @@ describe('admin API schemas', () => {
     })
     expect(assignments.items[0].score_count).toBe(2)
     expect(assignments.items[0].provisional_composite).toBe(1.25)
+    // A platform that predates the field reads as "no seed", not a guess.
+    expect(assignments.items[0].seed).toBeNull()
     expect(() =>
       releaseValidatorAssignmentInputSchema.parse({
         agentId: assignments.items[0].agent_id,
@@ -867,6 +869,40 @@ describe('admin API schemas', () => {
         reason: 'short',
       }),
     ).toThrow()
+  })
+
+  it('keeps a continual retest lease seed exact and rejects a lossy number', () => {
+    const lease = {
+      agent_id: '90cb5697-cbc1-40f4-a27e-439a7986a054',
+      agent_name: 'memory-agent',
+      miner_hotkey: '5Miner',
+      validator_hotkey: '5Validator',
+      issued_at: '2026-09-22T17:35:16Z',
+      deadline: '2026-09-22T20:35:16Z',
+      bench_version: 13,
+      attempt_count: 1,
+      score_count: 3,
+      provisional_composite: 0.9,
+      purpose: 'continual_retest',
+      seed: '9007199254740993',
+    }
+    const parsed = validatorAssignmentListSchema.parse({
+      count: 1,
+      generation: 'active',
+      active_bench_version: 13,
+      items: [lease],
+    })
+    expect(parsed.items[0].seed).toBe('9007199254740993')
+    for (const seed of [Number.MAX_SAFE_INTEGER + 2, '-1', '01', '1e3']) {
+      expect(() =>
+        validatorAssignmentListSchema.parse({
+          count: 1,
+          generation: 'active',
+          active_bench_version: 13,
+          items: [{ ...lease, seed }],
+        }),
+      ).toThrow()
+    }
   })
 })
 

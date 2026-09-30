@@ -5692,6 +5692,15 @@ export const validatorAssignmentSchema = z.object({
     .default(null),
   agent_status: z.string().nullish().default(null),
   first_reported_at: z.string().nullish().default(null),
+  // Exact decimal dataset seed the lease runs. A string, never a number: a
+  // 64-bit seed above 2**53 would round in JSON and two different continual
+  // retest seeds could read as the same paired run. Null against a platform
+  // that predates the field or a ticket with no seed yet.
+  seed: z
+    .string()
+    .regex(/^(0|[1-9][0-9]*)$/)
+    .nullish()
+    .default(null),
 })
 
 export const validatorAssignmentListSchema = z.object({

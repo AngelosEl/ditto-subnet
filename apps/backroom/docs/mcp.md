@@ -32,6 +32,18 @@ global concurrency limit. `checks_per_minute` and
 the latest heartbeat, and they are null, never zero, until a check completes. The
 tool is read-only and schedules nothing.
 
+`list_validator_assignments` reads live leases from
+`GET /api/v1/admin/validator-assignments`. Each lease carries `seed`, the exact
+decimal dataset seed the validator runs, as a string. A JSON number would round
+a 64-bit seed above 2^53, so two different seeds could compare equal. Two
+`continual_retest` leases on one agent with equal `seed` values are the same
+paired shared-seed run. That lets an operator confirm two simultaneous runs
+match before either is accepted, without copying the seed into a manual run.
+`seed` is null for a ticket with no seed yet, and for a Platform that predates
+the field. It is a seed id only. Dataset contents never leave Platform, and the
+confirmation plan's pending seeds stay server-side
+(`get_continual_retest_diagnostic` reports only `pending_seed_count`).
+
 `get_outlier_escalation` reads the anomalous-score escalation that can open ATH
 holds (`review_kind` `anomalous_score`) through
 `GET /api/v1/admin/outlier-escalation`. The escalation is configured only by

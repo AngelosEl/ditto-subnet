@@ -13288,6 +13288,11 @@ export interface components {
             /** Score Count */
             score_count: number;
             /**
+             * Seed
+             * @description Exact decimal dataset seed this lease runs, as a string so a 64-bit value survives JSON. For continual_retest it is the shared champion-anchored seed, so two leases for one agent with the same value are the same paired run. Null when the ticket has no seed yet.
+             */
+            seed?: string | null;
+            /**
              * Slot Id
              * @default slot-0
              */

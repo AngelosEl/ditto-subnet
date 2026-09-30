@@ -5102,6 +5102,57 @@ describe('Backroom MCP tools', () => {
     await server.close()
   })
 
+  it('proves two continual retest leases share one exact seed', async () => {
+    process.env.DITTO_ADMIN_API_TOKEN = 'platform-admin-token'
+    const agentId = '69c73375-e6ef-41fa-b6d8-8df15feea985'
+    const lease = (validator: string, seed: string | null) => ({
+      agent_id: agentId,
+      agent_name: 'clear',
+      miner_hotkey: '5' + 'C'.repeat(47),
+      validator_hotkey: validator,
+      issued_at: '2026-09-22T17:35:16Z',
+      deadline: '2026-09-22T20:35:16Z',
+      bench_version: 13,
+      attempt_count: 1,
+      score_count: 3,
+      provisional_composite: 0.9,
+      slot_id: 'slot-1',
+      purpose: seed === null ? 'canonical_quorum' : 'continual_retest',
+      seed,
+    })
+    const fetchMock = vi.fn().mockResolvedValueOnce(
+      Response.json({
+        count: 3,
+        generation: 'active',
+        active_bench_version: 13,
+        items: [
+          lease('5' + 'A'.repeat(47), '9007199254740993'),
+          lease('5' + 'B'.repeat(47), '9007199254740993'),
+          lease('5' + 'D'.repeat(47), null),
+        ],
+      }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+    const { client, server } = await connect([BACKROOM_READ_SCOPE])
+
+    const response = await client.callTool({
+      name: 'list_validator_assignments',
+      arguments: { agentId },
+    })
+    expect(response.isError).not.toBe(true)
+    const result = readJsonResult(response) as {
+      items: Array<{ validator_hotkey: string; seed: string | null }>
+    }
+    expect(result.items.map((item) => item.seed)).toEqual([
+      '9007199254740993',
+      '9007199254740993',
+      null,
+    ])
+
+    await client.close()
+    await server.close()
+  })
+
   it('ramps the slot cap with the exact platform contract', async () => {
     process.env.DITTO_ADMIN_API_TOKEN = 'platform-admin-token'
     const settings = {
