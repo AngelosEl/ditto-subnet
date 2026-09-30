@@ -189,7 +189,9 @@ def runtime_write_refusal(output: Path) -> str | None:
     active version number, would expand trust without the activation review.
     """
     runtime = RUNTIME_MANIFESTS.resolve()
-    if output.resolve().parent == runtime:
+    # Anywhere in the package ships in the screener image; data/ itself is
+    # the runtime-loaded trust set.
+    if output.resolve().is_relative_to(runtime.parent):
         return (
             f"refusing to write {output}: {RUNTIME_MANIFEST_DIR} is the "
             f"runtime-loaded trust set. Stage the manifest in {STAGED_MANIFEST_DIR} "
@@ -236,6 +238,17 @@ def main(argv: list[str] | None = None) -> int:
         # derivatives; a kit change always gets the next version number.
         print(
             f"refusing to rewrite {args.output}; write the next manifest version",
+            file=sys.stderr,
+        )
+        return 1
+    directory = args.output.resolve().parent
+    if directory == STAGED_MANIFESTS.resolve():
+        # Git drops the staging directory once activation moves its last
+        # manifest, so the printed regenerate command recreates it.
+        directory.mkdir(parents=True, exist_ok=True)
+    elif not directory.is_dir():
+        print(
+            f"refusing to write {args.output}: {directory} does not exist",
             file=sys.stderr,
         )
         return 1
