@@ -2,6 +2,23 @@
 
 <!-- version list -->
 
+## v0.332.1 (2026-09-30)
+
+### Bug Fixes
+
+- **platform**: Bind treasury policy actor to bearer principal
+  ([#2330](https://github.com/ditto-assistant/ditto-subnet/pull/2330),
+  [`4b75960`](https://github.com/ditto-assistant/ditto-subnet/commit/4b75960c8212f71a2d453699578251909b73fe3c))
+
+- **treasury**: Block live dispatch until authorization is verified
+  ([#2331](https://github.com/ditto-assistant/ditto-subnet/pull/2331),
+  [`8786bfb`](https://github.com/ditto-assistant/ditto-subnet/commit/8786bfb51679f3474384ae0b5d1f23641d24e80a))
+
+- **validator**: Cap statistical bands across KOTH fold
+  ([#2594](https://github.com/ditto-assistant/ditto-subnet/pull/2594),
+  [`831bf72`](https://github.com/ditto-assistant/ditto-subnet/commit/831bf720433aec44204d5963ce38588bffd0f8ae))
+
+
 ## v0.332.0 (2026-09-30)
 
 ### Bug Fixes
