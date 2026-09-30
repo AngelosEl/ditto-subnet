@@ -5397,6 +5397,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/public/treasury-allocation": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Public Treasury Allocation */
+        get: operations["get_public_treasury_allocation_api_v1_public_treasury_allocation_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/public/v13-review-clock": {
         parameters: {
             query?: never;
@@ -27214,6 +27231,21 @@ export interface components {
             /** Summary */
             summary: string;
         };
+        /** PublicServiceBucket */
+        PublicServiceBucket: {
+            /** Allocation Bps */
+            allocation_bps: number;
+            /** Bucket Id */
+            bucket_id: string;
+            /** Holding Coldkey */
+            holding_coldkey: string | null;
+            /** Payee Rules */
+            payee_rules: components["schemas"]["TreasuryPayeeRule"][];
+            /** Publish Payments */
+            publish_payments: boolean;
+            /** Purpose */
+            purpose: string;
+        };
         /**
          * PublicSubmissionFamily
          * @description The scored generations collapsed into one owner leaderboard position.
@@ -27682,6 +27714,71 @@ export interface components {
             usage_available: number;
             /** Usage Unavailable */
             usage_unavailable: number;
+        };
+        /** PublicTreasuryAllocation */
+        PublicTreasuryAllocation: {
+            /**
+             * Allocation Version
+             * @enum {integer}
+             */
+            allocation_version: 1 | 2;
+            /** Buckets */
+            buckets: components["schemas"]["PublicServiceBucket"][];
+            /** Burn Of Miner Remainder */
+            burn_of_miner_remainder: number;
+            /** Burn Revision */
+            burn_revision: number;
+            /** Collector Coldkey */
+            collector_coldkey: string | null;
+            /** Collector Hotkey */
+            collector_hotkey: string | null;
+            /**
+             * Denominator
+             * @enum {string}
+             */
+            denominator: "miner_emission" | "released_miner_emission";
+            /**
+             * Effective Service Share
+             * @default 0
+             * @constant
+             */
+            effective_service_share: 0;
+            /** Forecast Burn Share */
+            forecast_burn_share: number;
+            /** Forecast Miner Share */
+            forecast_miner_share: number;
+            /** Forecast Service Share */
+            forecast_service_share: number;
+            /**
+             * Mode
+             * @default shadow
+             * @constant
+             */
+            mode: "shadow";
+            /**
+             * Payment Observer Status
+             * @default not_activated
+             * @constant
+             */
+            payment_observer_status: "not_activated";
+            /** Policy Revision */
+            policy_revision: number;
+            /**
+             * Routing Status
+             * @default not_activated
+             * @constant
+             */
+            routing_status: "not_activated";
+            /** Service Bps */
+            service_bps: number;
+            /** Sweep Interval Hours */
+            sweep_interval_hours: number;
+            /**
+             * Sweep Status
+             * @default not_activated
+             * @constant
+             */
+            sweep_status: "not_activated";
         };
         /** PublicTreasuryEvent */
         PublicTreasuryEvent: {
@@ -32676,6 +32773,31 @@ export interface components {
             /** Revision */
             revision: number;
         };
+        /**
+         * TreasuryPayeeRule
+         * @description An exact chain-payment classification, never provider credit proof.
+         */
+        TreasuryPayeeRule: {
+            /**
+             * Asset
+             * @default TAO
+             * @enum {string}
+             */
+            asset: "TAO" | "SN28_ALPHA" | "SN118_ALPHA";
+            /**
+             * Enabled
+             * @default true
+             */
+            enabled: boolean;
+            /** Label */
+            label: string;
+            /** Recipient Coldkey */
+            recipient_coldkey: string;
+            /** Recipient Hotkey */
+            recipient_hotkey?: string | null;
+            /** Rule Id */
+            rule_id: string;
+        };
         /** TreasuryServiceBucket */
         TreasuryServiceBucket: {
             /**
@@ -32687,6 +32809,13 @@ export interface components {
             bucket_id: string;
             /** Holding Coldkey */
             holding_coldkey?: string | null;
+            /** Payee Rules */
+            payee_rules?: components["schemas"]["TreasuryPayeeRule"][];
+            /**
+             * Publish Payments
+             * @default true
+             */
+            publish_payments: boolean;
             /** Purpose */
             purpose: string;
             /** Service Account Ref */
@@ -32735,6 +32864,11 @@ export interface components {
             mode: "shadow";
             /** Service Buckets */
             service_buckets?: components["schemas"]["TreasuryServiceBucket"][];
+            /**
+             * Sweep Interval Hours
+             * @default 24
+             */
+            sweep_interval_hours: number;
             /** Treasury Coldkey */
             treasury_coldkey?: string | null;
             /** Treasury Hotkey */
@@ -45305,6 +45439,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_public_treasury_allocation_api_v1_public_treasury_allocation_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PublicTreasuryAllocation"];
                 };
             };
         };

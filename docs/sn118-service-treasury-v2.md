@@ -1,6 +1,6 @@
-# SN118 service treasury v2: three separately held wallets
+# SN118 service treasury v2: one collector and configurable service wallets
 
-Status: **design for review; no production allocation, wallet, or payment is authorized**.
+Status: **implementation under review; no production allocation, wallet, or payment applied**.
 The existing v1 policy is shadow only, has two fixed fields and a 500 bps cap.
 This proposal supersedes its 25 bps GM / 25 bps maintenance example. It does
 not reinterpret any stored v1 revision or turn the current signer prototype on.
@@ -31,12 +31,11 @@ For the initial GM-only proposal (`S = 0.10`):
 These percentages are of the full miner emission vector. They are forecasts,
 not current routing: the active validator still sends all emission to burn.
 
-The requested initial target is **1,000 bps for GM credits**. Bitsec audit and
-Bitcast advertising buckets start at zero until their shares, budgets and
-owners are explicitly reviewed. The open economic decision is whether 1,000
-bps caps all service buckets together or applies to GM alone. The active
-validator path must not be implemented or enabled until this is settled in a
-revisioned policy. No service bucket may borrow another bucket's allocation.
+The confirmed service pool is **1,000 bps total**, split between GM, Bitsec,
+Bitcast and later buckets. The exact initial split and public wallet addresses
+await Peyton's inputs. The schema permits a smaller pool for a guarded first
+activation, but never more than 1,000 bps combined. No service bucket may borrow
+another bucket's allocation. The collector cannot also compete for miner payout.
 
 ## Wallet identity and custody
 
@@ -51,6 +50,13 @@ coldkey while retaining the same hotkey. This would give each service a distinct
 on-chain balance without adding three emission recipients or occupying three
 registration slots. It introduces a collector custody window and requires
 exactly-once sweep accounting, independent signer review, and a tested rollback.
+Peyton creates and backs up each holding-wallet seed himself. Those seeds are
+not GCP-managed and never belong in Platform, Backroom, screenshots, or PRs.
+Holding wallets require no unattended signer: Peyton signs vendor payments.
+The collector is a separate signing surface: an automatic sweep still needs
+its coldkey available to a protected signer, with independent custody/recovery
+review. Self-owned holding seeds do not by themselves authorize that signer.
+
 Holding SN118 stake is not the same as a spendable TAO balance; a provider
 payment would need a separate reviewed conversion and transfer.
 This keeps the validator to one bounded treasury recipient and prevents
@@ -131,9 +137,42 @@ three-service payment engine. Add a bucket-scoped, finalized-receipt sweep
 journal first; keep each provider's payment adapter separate and blocked until
 its own authenticated instructions and reconciliation proof exist.
 
+## Configurable transparency
+
+Backroom's **Emissions & treasury** page edits the collector, holding wallets,
+bucket bps, distribution interval (1–168 hours), payment publication and exact
+payee rules. The existing CAS revision and admin-activity boundary records
+wallet/rule changes. Public addresses are syntax checked even in shadow mode;
+this does not prove SS58 checksum, custody or chain registration.
+Billing account references, private actors and reasons stay out of the public
+allocation projection and public policy details.
+
+`GET /api/v1/public/treasury-allocation` and the dashboard **Gamma · Beta** page
+show configured service allocations, a service-first forecast, collector and
+holding addresses, and payment rules. They explicitly show effective service
+funding, distribution and observation as inactive. The Beta page makes no
+token issuance, redemption, or token-economic promise.
+
+A rule matches the holding coldkey plus exact payee, asset and, for stake,
+recipient hotkey. Disabled/ambiguous rules must not classify a payment. A
+finalized transfer to GM's configured treasury is **GM credit payment**.
+Only a matched provider receipt proves **GM credits confirmed** or its USD
+amount. These are stages of one payment, not two purchases. Historical events
+must retain the policy/rule revision in effect at their finalized block; a
+new payee rule cannot rewrite old receipts. The existing treasury receipt
+table is v1-specific and has no importer; a generic finalized payment observer
+and bucket-scoped sweep journal are still required before activation.
+
+`ditto/treasury/service_allocation.py` supplies tested service-first folding
+and integer-conserving distribution planning without activating either live
+path. The distribution input must be independently attributed collector
+earnings, not its balance delta or principal. Production integration must
+bind the fold to immutable fleet-supported ledger pins and the sweeper to
+durable claims, finality proofs and explicit uncertain-outcome reconciliation.
+
 ## Activation sequence
 
-1. Settle the total-cap and denominator decisions publicly; review miner
+1. Record the confirmed total-cap and denominator decisions publicly; review miner
    economics, custody, recipient identity and wallet recovery. Keep the
    policy shadow-only and all three bps zero in production while doing so.
 2. Land backwards-compatible shadow-policy and read-only chain/receipt code.

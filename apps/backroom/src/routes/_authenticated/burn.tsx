@@ -3,9 +3,14 @@ import { AlertTriangle, Flame } from 'lucide-react'
 import { BurnControlPanel } from '../../components/BurnControlPanel'
 import { PageHeader } from '../../components/PageHeader'
 import { getBurnSettings } from '../../server/admin.functions'
+import { getTreasurySettings } from '../../server/treasury.functions'
+import { TreasuryControlPanel } from '../../components/TreasuryControlPanel'
 
 export const Route = createFileRoute('/_authenticated/burn')({
-  loader: () => getBurnSettings(),
+  loader: async () => {
+    const [burn, treasury] = await Promise.all([getBurnSettings(), getTreasurySettings()])
+    return { burn, treasury }
+  },
   pendingComponent: Pending,
   errorComponent: ErrorState,
   component: BurnPage,
@@ -27,7 +32,8 @@ function BurnPage() {
           </div>
         }
       />
-      <BurnControlPanel initialState={initialState} readOnly={user.accessLevel === 'read'} />
+      <BurnControlPanel initialState={initialState.burn} readOnly={user.accessLevel === 'read'} />
+      <TreasuryControlPanel initialState={initialState.treasury} readOnly={user.accessLevel === 'read'} />
     </div>
   )
 }

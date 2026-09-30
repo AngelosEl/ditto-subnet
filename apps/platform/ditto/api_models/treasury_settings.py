@@ -2,12 +2,13 @@
 
 Neither policy version changes validator weights or authorizes a transfer.
 Version 1 keeps its original 500 bps ceiling; version 2 describes one
-collector and isolated service holding coldkeys under a provisional 1,000 bps
+collector and isolated service holding coldkeys under a 1,000 bps
 aggregate ceiling.
 """
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from typing import Annotated, Literal
 
@@ -15,6 +16,30 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 MAX_TREASURY_BPS = 500
 MAX_SERVICE_BPS = 1_000
+PUBLIC_ADDRESS_PATTERN = r"^[1-9A-HJ-NP-Za-km-z]{47,48}$"
+
+
+class TreasuryPayeeRule(BaseModel):
+    """An exact chain-payment classification, never provider credit proof."""
+
+    model_config = ConfigDict(extra="ignore", frozen=True, strict=True)
+
+    rule_id: Annotated[str, Field(pattern=r"^[a-z][a-z0-9_]{1,47}$")]
+    label: Annotated[str, Field(min_length=3, max_length=80)]
+    recipient_coldkey: Annotated[str, Field(pattern=PUBLIC_ADDRESS_PATTERN)]
+    asset: Literal["TAO", "SN28_ALPHA", "SN118_ALPHA"] = "TAO"
+    recipient_hotkey: Annotated[str, Field(pattern=PUBLIC_ADDRESS_PATTERN)] | None = (
+        None
+    )
+    enabled: bool = True
+
+    @model_validator(mode="after")
+    def validate_stake_target(self) -> TreasuryPayeeRule:
+        if self.asset != "TAO" and not self.recipient_hotkey:
+            raise ValueError("stake-payment rule requires recipient hotkey")
+        if self.asset == "TAO" and self.recipient_hotkey:
+            raise ValueError("TAO payment rule cannot match a stake hotkey")
+        return self
 
 
 class TreasuryServiceBucket(BaseModel):
@@ -25,9 +50,19 @@ class TreasuryServiceBucket(BaseModel):
     allocation_bps: Annotated[int, Field(ge=0, le=MAX_SERVICE_BPS)] = 0
     holding_coldkey: str | None = None
     service_account_ref: str | None = None
+    publish_payments: bool = True
+    payee_rules: list[TreasuryPayeeRule] = Field(default_factory=list, max_length=20)
 
     @model_validator(mode="after")
     def validate_recipient(self) -> TreasuryServiceBucket:
+        ids = [rule.rule_id for rule in self.payee_rules]
+        matches = [
+            (rule.recipient_coldkey, rule.asset, rule.recipient_hotkey)
+            for rule in self.payee_rules
+            if rule.enabled
+        ]
+        if len(ids) != len(set(ids)) or len(matches) != len(set(matches)):
+            raise ValueError("duplicate or ambiguous payee rule")
         if self.allocation_bps and not self.holding_coldkey:
             raise ValueError("nonzero service allocation requires holding coldkey")
         if (
@@ -44,6 +79,7 @@ class TreasurySettings(BaseModel):
 
     mode: Literal["shadow"] = "shadow"
     allocation_version: Literal[1, 2] = 1
+    sweep_interval_hours: Annotated[int, Field(ge=1, le=168)] = 24
     maintenance_bps: Annotated[int, Field(ge=0, le=MAX_TREASURY_BPS)] = 0
     gm_bps: Annotated[int, Field(ge=0, le=MAX_TREASURY_BPS)] = 0
     service_buckets: list[TreasuryServiceBucket] = Field(
@@ -59,6 +95,19 @@ class TreasurySettings(BaseModel):
     @model_validator(mode="after")
     def validate_allocation(self) -> TreasurySettings:
         if self.allocation_version == 2:
+            # Address fields are public: reject phrases/credentials even in
+            # shadow mode. Syntax alone is not custody or checksum proof.
+            addresses = [
+                self.treasury_hotkey,
+                self.treasury_coldkey,
+                *(bucket.holding_coldkey for bucket in self.service_buckets),
+            ]
+            if any(
+                address is not None
+                and not re.fullmatch(PUBLIC_ADDRESS_PATTERN, address)
+                for address in addresses
+            ):
+                raise ValueError("v2 wallets must be public SS58 address strings")
             if self.maintenance_bps or self.gm_bps:
                 raise ValueError("v2 service buckets cannot mix with v1 allocations")
             if self.gm_account_ref:
