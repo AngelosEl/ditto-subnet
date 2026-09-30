@@ -94,7 +94,7 @@ submittable files. No runtime path, and neither screener image, reads
 `staged-starter-provenance/`.
 
 Activating a staged manifest is its own reviewed change. It is made only after
-the independent canonical starter review in
+the independent canonical starter review described in the repository-root
 `docs/canonical-starter-source-control.md` is recorded and reconciled with the
 source-only fixture result, and only for a manifest whose files equal that
 reviewed fixture archive exactly. Staged `v6` equals
