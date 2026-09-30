@@ -21,6 +21,7 @@ import pytest
 from ditto_screener import binary_analysis as binary_analysis_module
 from ditto_screener import source_review as source_review_module
 from ditto_screener.binary_analysis import BinarySample
+from ditto_screener.source_reachability import ReachabilityState, analyze_reachability
 from ditto_screener.source_review import (
     OpenRouterSourceReviewAgent,
     TarSourceRepository,
@@ -1735,13 +1736,20 @@ def test_stock_starter_kits_raise_no_decisive_finding_with_test_code(
         files[relative] = raw
     text = [(path, raw.decode()) for path, raw in files.items()]
 
-    # Test code is scanned now, so the kits' own tests must stay inert.
-    assert (
-        find_decisive_malicious_source(
-            text, explicitly_executable_paths=frozenset(files)
-        )
-        == []
-    )
+    # Test code is scanned now, so the kits' own tests must stay inert. Every
+    # file is treated as executable here, so a decisive match may only cite
+    # files the kit's build provably never copies, which is exactly how
+    # malicious_preflight clears its broad legacy inventory below. A match in
+    # served code, test items included, fails.
+    reachability = analyze_reachability(dict(text))
+    for match in find_decisive_malicious_source(
+        text, explicitly_executable_paths=frozenset(files)
+    ):
+        for location in match["locations"]:
+            assert (
+                reachability[str(location["path"])].state
+                == ReachabilityState.PROVEN_INERT
+            ), match
     archive = str(_archive_files(tmp_path, files))
     for mode in ("off", "shadow", "enforce"):
         repository = TarSourceRepository(archive, static_preflight_v2_mode=mode)
