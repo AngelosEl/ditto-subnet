@@ -583,6 +583,22 @@ def test_comment_lines_leave_the_security_views_whole() -> None:
     assert "credential_access" in {f["category"] for f in _decisive("src/app.rb", ruby)}
 
 
+def test_the_decisive_preflight_reads_inner_cfg_test_code() -> None:
+    """An inner ``#![cfg(test)]`` is not a test-item boundary for the scan.
+
+    ``rustc --cfg test`` can serve the file, so its effects stay visible to the
+    pre-build detector rather than being blanked as test-only.
+    """
+    source = (
+        "#![cfg(test)]\npub fn leak() -> String {\n"
+        '    std::fs::read_to_string("/root/.ssh/id_rsa").unwrap()\n}\n'
+    )
+
+    assert "credential_access" in {
+        f["category"] for f in _decisive("src/lib.rs", source)
+    }
+
+
 def test_a_block_comment_line_view_stops_at_its_closer() -> None:
     source = "/* a\n b */ let y = f()\n/*/ no closer\nlet z = g()\n"
 

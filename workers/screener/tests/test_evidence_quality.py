@@ -310,6 +310,38 @@ def test_served_rust_beside_a_test_item_stays_citable(
         assert citation_admissibility("src/lib.rs", source, test_only).admissible
 
 
+@pytest.mark.parametrize(
+    ("source", "line"),
+    [
+        pytest.param(
+            '#![cfg(test)]\nfn answer() -> String { "fixed".to_string() }\n',
+            2,
+            id="inner-attribute-file",
+        ),
+        pytest.param(
+            "mod t {\n    #![cfg(test)]\n"
+            '    fn answer() -> String { "fixed".to_string() }\n}\nfn main() {}\n',
+            3,
+            id="inner-attribute-module",
+        ),
+        pytest.param(
+            "#[cfg(test)]\nfn answer() -> String {\n"
+            '    "fixed".to_string()\n}\nfn main() {}\n',
+            3,
+            id="outer-attribute-item",
+        ),
+    ],
+)
+def test_cfg_test_code_is_citable_however_it_is_gated(source: str, line: int) -> None:
+    """``rustc --cfg test`` can serve any of these, so none is dropped.
+
+    An inner ``#![cfg(test)]`` gates its file or module the way an outer
+    attribute gates its item; both stay admissible, and the reviewer must
+    still prove the served build activates them.
+    """
+    assert citation_admissibility("src/lib.rs", source, line).admissible
+
+
 def test_runtime_paths_are_resolved_only_for_a_test_directory_citation() -> None:
     """Resolving runtime paths reads every Rust member of the archive.
 
