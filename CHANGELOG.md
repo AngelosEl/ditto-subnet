@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.332.2 (2026-09-30)
+
+### Bug Fixes
+
+- **screener**: Mask source literals by language
+  ([#2565](https://github.com/ditto-assistant/ditto-subnet/pull/2565),
+  [`c700053`](https://github.com/ditto-assistant/ditto-subnet/commit/c700053a7f14b55d893a4471389f3577aa3c398a))
+
+
 ## v0.332.1 (2026-09-30)
 
 ### Bug Fixes
