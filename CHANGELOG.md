@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.330.9 (2026-09-30)
+
+### Bug Fixes
+
+- **screener**: Sign bounded dossier gap components
+  ([#2572](https://github.com/ditto-assistant/ditto-subnet/pull/2572),
+  [`fb691f8`](https://github.com/ditto-assistant/ditto-subnet/commit/fb691f8804847fa50a6a5b381c0de060702df1a4))
+
+
 ## v0.330.8 (2026-09-29)
 
 ### Bug Fixes
