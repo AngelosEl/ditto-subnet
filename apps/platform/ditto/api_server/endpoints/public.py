@@ -232,6 +232,7 @@ from ditto.api_server.deferred_source_review import (
     deep_review_attempt_id,
     public_deferred_review_triggers,
     public_review_conclusion,
+    public_review_reason,
     verified_review_notes,
 )
 from ditto.api_server.efficiency import (
@@ -6147,7 +6148,7 @@ def _public_activity_response(
                 review_reason=(
                     (ath_reviews or {})[row.agent.agent_id].reason
                     if row.agent.agent_id in (ath_reviews or {})
-                    else row.agent.review_reason
+                    else public_review_reason(row.agent.review_reason)
                 ),
                 review_event=(
                     (ath_reviews or {})[row.agent.agent_id].event
@@ -6616,10 +6617,12 @@ async def _ath_review_public_snapshot(
         )
         snapshots[review.agent_id] = _PublicAthReviewSnapshot(
             event=lifecycle.event,
-            reason=lifecycle.reason,
+            reason=public_review_reason(lifecycle.reason),
             event_at=lifecycle.event_at,
             opened_at=lifecycle.opened_at,
-            original_reason=review.original_reason or DEFAULT_OPEN_REASON,
+            original_reason=public_review_reason(
+                review.original_reason or DEFAULT_OPEN_REASON
+            ),
             original_duplicate_of=review.original_duplicate_of,
             deferred_evidence=(
                 review.original_evidence
@@ -7486,7 +7489,11 @@ async def agent_summary(
         duplicate_name=_public_duplicate_name(duplicate, handle_claims, strike=True),
         duplicate_version=duplicate.version if duplicate is not None else None,
         duplicate_hotkey=duplicate.miner_hotkey if duplicate is not None else None,
-        review_reason=review.reason if review is not None else row.agent.review_reason,
+        review_reason=(
+            review.reason
+            if review is not None
+            else public_review_reason(row.agent.review_reason)
+        ),
         review_event=review.event if review is not None else None,
         review_event_at=review.event_at if review is not None else None,
         review_original_reason=(

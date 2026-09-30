@@ -49,6 +49,7 @@ from ditto.api_models.system_health import (
 )
 from ditto.api_models.ticket_status import TicketStatus
 from ditto.api_server.datapipeline import DataPipelineError, NullGenerator
+from ditto.api_server.deferred_source_review import INTEGRITY_DOUBLE_CHECK_REASON
 from ditto.api_server.dependencies import (
     get_chain_client,
     get_dataset_generator,
@@ -6359,10 +6360,7 @@ class TestClaim:
                     agent_id=agent_id,
                     status="pending",
                     opened_at=opened_at,
-                    original_reason=(
-                        "Top-five rank qualified this submission for an "
-                        "integrity double-check"
-                    ),
+                    original_reason=INTEGRITY_DOUBLE_CHECK_REASON,
                     original_policy_version=SCREENING_POLICY_VERSION,
                     original_evidence={
                         "previous_status": AgentStatus.SCORED.value,
