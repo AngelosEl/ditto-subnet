@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.330.15 (2026-09-30)
+
+### Bug Fixes
+
+- **screener**: Retain unresolved generator source holds
+  ([#2586](https://github.com/ditto-assistant/ditto-subnet/pull/2586),
+  [`138bad8`](https://github.com/ditto-assistant/ditto-subnet/commit/138bad8449c1f704a7ba374cbf45d8a4e0ff7a06))
+
+
 ## v0.330.14 (2026-09-30)
 
 ### Bug Fixes
