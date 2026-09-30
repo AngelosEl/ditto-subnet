@@ -687,6 +687,26 @@ def test_dockerfile_here_document_ends_at_buildkits_delimiter(
     assert "# $(cat /root/.ssh/id_rsa)" in mask_comments(source, "Dockerfile")
 
 
+def test_dockerfile_continuation_opens_a_second_here_document() -> None:
+    r"""BuildKit joins the whole ``\``-continued instruction before it reads a
+    body, so an opener on a later line opens its own here-document.
+
+    Skipping only the first line's here-document left the second body to be
+    parsed as instructions, and its script (which BuildKit runs verbatim) was
+    blanked as a Dockerfile comment.
+    """
+    source = (
+        "FROM alpine\n"
+        "RUN cat <<A >/dev/null \\\n"
+        "  && sh <<B\n"
+        "A\n"
+        "# $(cat /root/.ssh/id_rsa)\n"
+        "B\n"
+    )
+
+    assert "# $(cat /root/.ssh/id_rsa)" in mask_comments(source, "Dockerfile")
+
+
 @pytest.mark.parametrize(
     "source",
     [

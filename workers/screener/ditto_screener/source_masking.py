@@ -1153,15 +1153,16 @@ def _lex_dockerfile(text: str) -> bytearray | None:
             continue
         end = start + len(content)
         physical = content
-        heredoc = False
+        # BuildKit joins the whole continued instruction before it reads any
+        # here-document body, so an opener on a later line (``RUN cat <<A \``
+        # then ``&& sh <<B``) opens a second body. Collect every segment's
+        # openers, then skip all their bodies in order.
+        markers: list[tuple[str, bool]] = []
         while True:
-            markers = _dockerfile_heredocs(physical)
-            if markers is None:
+            segment = _dockerfile_heredocs(physical)
+            if segment is None:
                 return None
-            if markers:
-                heredoc = True
-                index = _skip_dockerfile_heredocs(lines, index, markers)
-                break
+            markers.extend(segment)
             if not physical.rstrip(" \t").endswith("\\") or index >= len(lines):
                 break
             next_start, next_line = lines[index]
@@ -1176,6 +1177,9 @@ def _lex_dockerfile(text: str) -> bytearray | None:
                 physical = "\\"
                 continue
             end = next_start + len(physical)
+        heredoc = bool(markers)
+        if heredoc:
+            index = _skip_dockerfile_heredocs(lines, index, markers)
         instruction = _DOCKER_INSTRUCTION.match(body)
         if (
             heredoc
