@@ -869,6 +869,7 @@ export const screenerFleetReleaseSchema = z.object({
   revision: z.string().regex(/^[0-9a-f]{40}$/).nullish().transform((value) => value ?? null),
   version: z.string().min(1).nullish().transform((value) => value ?? null),
   activated_at: z.number().int().nonnegative().nullish().transform((value) => value ?? null),
+  source_fixture_v1: z.boolean().default(false),
 })
 
 const screenerDockerHealthSchema = z.object({
@@ -4478,12 +4479,20 @@ const sourceReviewCausalRoleBindingSchema = z.strictObject({
 
 export const sourceReviewCausalEvidenceSchema = z
   .strictObject({
-    schema_version: z.literal(2),
+    schema_version: z.union([z.literal(2), z.literal(3)]),
     authority_transition: sourceReviewAuthorityTransitionSchema,
     scorer_visible_effect: sourceReviewScorerVisibleEffectSchema,
     role_bindings: z.array(sourceReviewCausalRoleBindingSchema).min(1).max(32),
+    i5_proof: z.strictObject({
+      evaluation_assumption: z.string().min(12).max(240),
+      ordinary_product_exclusion: z.string().min(12).max(240),
+      assumption_evidence_index: z.number().int().min(0).max(15),
+    }).nullish(),
   } satisfies PlatformResponseShape<GeneratedSourceReviewCausalEvidence>)
   .superRefine((causal, context) => {
+    if ((causal.schema_version === 3) !== (causal.i5_proof != null)) {
+      context.addIssue({ code: 'custom', message: 'causal evidence v3 requires an I5 proof' })
+    }
     const bindings = causal.role_bindings.map((binding) =>
       [binding.path, binding.line, binding.category, binding.role].join('\u0000'))
     if (new Set(bindings).size !== bindings.length) {
@@ -4638,6 +4647,11 @@ export const sourceReviewFindingSchema = z
             code: 'custom', message: 'causal role binding does not reference finding evidence',
           })
         }
+      }
+      const proof = finding.causal_evidence.i5_proof
+      if (proof && !['benchmark_emulation', 'embedded_evaluator_logic'].includes(
+        finding.evidence[proof.assumption_evidence_index]?.category ?? '')) {
+        context.addIssue({ code: 'custom', message: 'I5 assumption is not bound to source evidence' })
       }
     }
     if (finding.invariant_assessment) {
@@ -5679,6 +5693,15 @@ export const validatorAssignmentSchema = z.object({
     .default(null),
   agent_status: z.string().nullish().default(null),
   first_reported_at: z.string().nullish().default(null),
+  // Exact decimal dataset seed the lease runs. A string, never a number: a
+  // 64-bit seed above 2**53 would round in JSON and two different continual
+  // retest seeds could read as the same paired run. Null against a platform
+  // that predates the field or a ticket with no seed yet.
+  seed: z
+    .string()
+    .regex(/^(0|[1-9][0-9]*)$/)
+    .nullish()
+    .default(null),
 })
 
 export const validatorAssignmentListSchema = z.object({
@@ -7467,6 +7490,11 @@ export const screenReviewAuditSchema = z.object({
   cost_usd_used: z.number().nonnegative().nullish().default(null),
   model_disposition: z.enum(['inconclusive']).nullish().default(null),
   resolution_basis: z.enum(['insufficient_static_evidence']).nullish().default(null),
+  dossier_complete: z.boolean().nullish().default(null),
+  model_categories: z.array(z.string().regex(/^[a-z][a-z_]{0,63}$/)).max(8).nullish().default(null),
+  model_inconclusive_invariants: z.array(sourceReviewInvariantSchema).max(8).nullish().default(null),
+  model_evidence_count: z.number().int().min(0).max(16).nullish().default(null),
+  model_causal_role_count: z.number().int().min(0).max(16).nullish().default(null),
   model_steps_observed: z.number().int().min(0).max(10_000).nullish().default(null),
   tool_calls_observed: z.number().int().min(0).max(10_000).nullish().default(null),
   budget_stop_reason: z.enum(['none', 'step', 'tool', 'aggregate', 'token', 'cost', 'time']).nullish().default(null),

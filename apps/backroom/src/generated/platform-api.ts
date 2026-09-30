@@ -13288,6 +13288,11 @@ export interface components {
             /** Score Count */
             score_count: number;
             /**
+             * Seed
+             * @description Exact decimal dataset seed this lease runs, as a string so a 64-bit value survives JSON. For continual_retest it is the shared champion-anchored seed, so two leases for one agent with the same value are the same paired run. Null when the ticket has no seed yet.
+             */
+            seed?: string | null;
+            /**
              * Slot Id
              * @default slot-0
              */
@@ -29485,6 +29490,10 @@ export interface components {
             cause_detail?: ("lease_unavailable" | "review_disabled") | null;
             /** Cost Usd Used */
             cost_usd_used?: number | null;
+            /** Dossier Complete */
+            dossier_complete?: boolean | null;
+            /** Dossier Incomplete Components */
+            dossier_incomplete_components?: ("workspace_index" | "starter_diff" | "build_structure" | "integrity_surfaces" | "opaque_inventory" | "binary_analysis")[] | null;
             /** Elapsed Ms */
             elapsed_ms?: number | null;
             /** Final Stage */
@@ -29505,8 +29514,16 @@ export interface components {
             max_read_bytes?: number | null;
             /** Max Steps */
             max_steps: number;
+            /** Model Categories */
+            model_categories?: string[] | null;
+            /** Model Causal Role Count */
+            model_causal_role_count?: number | null;
             /** Model Disposition */
             model_disposition?: "inconclusive" | null;
+            /** Model Evidence Count */
+            model_evidence_count?: number | null;
+            /** Model Inconclusive Invariants */
+            model_inconclusive_invariants?: components["schemas"]["SourceReviewInvariant"][] | null;
             /** Model Steps Observed */
             model_steps_observed?: number | null;
             /** Model Tool Failure Subcode */
@@ -31406,14 +31423,15 @@ export interface components {
          */
         SourceReviewCausalEvidence: {
             authority_transition: components["schemas"]["SourceReviewAuthorityTransition"];
+            i5_proof?: components["schemas"]["SourceReviewI5Proof"] | null;
             /** Role Bindings */
             role_bindings: components["schemas"]["SourceReviewCausalRoleBinding"][];
             /**
              * Schema Version
              * @default 2
-             * @constant
+             * @enum {integer}
              */
-            schema_version: 2;
+            schema_version: 2 | 3;
             scorer_visible_effect: components["schemas"]["SourceReviewScorerVisibleEffect"];
         };
         /**
@@ -31487,6 +31505,18 @@ export interface components {
             risk_level: "low" | "medium" | "high";
             /** Summary */
             summary: string;
+        };
+        /**
+         * SourceReviewI5Proof
+         * @description Bounded, signed explanation of an alleged benchmark-specific recipe.
+         */
+        SourceReviewI5Proof: {
+            /** Assumption Evidence Index */
+            assumption_evidence_index: number;
+            /** Evaluation Assumption */
+            evaluation_assumption: string;
+            /** Ordinary Product Exclusion */
+            ordinary_product_exclusion: string;
         };
         /**
          * SourceReviewInvariant

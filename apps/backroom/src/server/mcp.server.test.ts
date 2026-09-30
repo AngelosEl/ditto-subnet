@@ -5102,6 +5102,57 @@ describe('Backroom MCP tools', () => {
     await server.close()
   })
 
+  it('proves two continual retest leases share one exact seed', async () => {
+    process.env.DITTO_ADMIN_API_TOKEN = 'platform-admin-token'
+    const agentId = '69c73375-e6ef-41fa-b6d8-8df15feea985'
+    const lease = (validator: string, seed: string | null) => ({
+      agent_id: agentId,
+      agent_name: 'clear',
+      miner_hotkey: '5' + 'C'.repeat(47),
+      validator_hotkey: validator,
+      issued_at: '2026-09-22T17:35:16Z',
+      deadline: '2026-09-22T20:35:16Z',
+      bench_version: 13,
+      attempt_count: 1,
+      score_count: 3,
+      provisional_composite: 0.9,
+      slot_id: 'slot-1',
+      purpose: seed === null ? 'canonical_quorum' : 'continual_retest',
+      seed,
+    })
+    const fetchMock = vi.fn().mockResolvedValueOnce(
+      Response.json({
+        count: 3,
+        generation: 'active',
+        active_bench_version: 13,
+        items: [
+          lease('5' + 'A'.repeat(47), '9007199254740993'),
+          lease('5' + 'B'.repeat(47), '9007199254740993'),
+          lease('5' + 'D'.repeat(47), null),
+        ],
+      }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+    const { client, server } = await connect([BACKROOM_READ_SCOPE])
+
+    const response = await client.callTool({
+      name: 'list_validator_assignments',
+      arguments: { agentId },
+    })
+    expect(response.isError).not.toBe(true)
+    const result = readJsonResult(response) as {
+      items: Array<{ validator_hotkey: string; seed: string | null }>
+    }
+    expect(result.items.map((item) => item.seed)).toEqual([
+      '9007199254740993',
+      '9007199254740993',
+      null,
+    ])
+
+    await client.close()
+    await server.close()
+  })
+
   it('ramps the slot cap with the exact platform contract', async () => {
     process.env.DITTO_ADMIN_API_TOKEN = 'platform-admin-token'
     const settings = {
@@ -9675,6 +9726,172 @@ describe('Backroom MCP tools', () => {
     await client.close()
     await server.close()
   })
+  it('explains an owner-suppressed generation over read scope with the admin token server-side', async () => {
+    process.env.DITTO_ADMIN_API_TOKEN = 'platform-admin-token'
+    // The #2105 shape: a newer generation whose canonical median beats its
+    // owner's 15-seed representative sits outside every cohort it outscores.
+    const newerId = '01f5373c-c626-4271-ac68-348bd52510d3'
+    const representativeId = '7a2ca671-788d-4b18-b6bf-799cc450680f'
+    const diagnostic = {
+      generated_at: '2026-09-22T23:51:00Z',
+      agent_id: newerId,
+      agent_status: 'scored',
+      active_bench_version: 13,
+      canonical_composite: 0.54072,
+      official_composite: 0.54072,
+      owner_representative_id: representativeId,
+      family: [
+        {
+          agent_id: newerId,
+          canonical_composite: 0.54072,
+          official_composite: 0.54072,
+          representative: false,
+          effective_composite: 0.54072,
+          canonical_sample_count: 3,
+          completed_wave_depth: 0,
+          first_seen: '2026-09-22T22:51:00Z',
+        },
+        {
+          agent_id: representativeId,
+          canonical_composite: 0.479032,
+          official_composite: 0.5965,
+          representative: true,
+          effective_composite: 0.5965,
+          canonical_sample_count: 3,
+          completed_wave_depth: 15,
+          first_seen: '2026-09-12T23:51:00Z',
+        },
+      ],
+      raw_confirmation_seeds: ['9223372036854775001'],
+      folded_confirmation_seeds: [],
+      in_raw_wave: false,
+      in_emission_set: false,
+      in_retest_cohort: false,
+      is_same_owner_challenger: false,
+      cohort_position: null,
+      cohort_size: 9,
+      configured_cohort_size: 5,
+      eligibility_mode: 'statistical',
+      eligibility_z: 1.64,
+      configured_max_size: 25,
+      ticket_status_counts: {},
+      active_ticket_count: 0,
+      seed_anchor_champion_id: representativeId,
+      seed_anchor_block: 123456,
+      seed_anchor_pinned: true,
+      admission_reason: 'owner_suppressed',
+      ledger_eligible: true,
+      canonical_sample_count: 3,
+      completed_wave_depth: 0,
+      official_sample_count: 3,
+      raw_confirmation_depth: 1,
+      composite_stderr: 0.01,
+      aggregate_mode: 'fleet_ready',
+      wave_membership: 'participants',
+      owner_key: 'owner:gryffindor',
+      representative_canonical_composite: 0.479032,
+      representative_official_composite: 0.5965,
+      representative_margin: 0.05578,
+      representative_selection: 'official_composite',
+      cohort_cutoff: {
+        agent_id: representativeId,
+        composite: 0.30444,
+        gap: -0.23628,
+        tie_band: 0.02,
+        within_tie_band: true,
+      },
+      emission_cutoff: {
+        agent_id: representativeId,
+        composite: 0.30444,
+        gap: -0.23628,
+        tie_band: 0.02,
+        within_tie_band: true,
+      },
+      claim: {
+        lane_enabled: true,
+        latest_block: 1000,
+        champion_agent_id: representativeId,
+        champion_crown_block: 900,
+        scheduled_round: false,
+        spare_capacity_window: false,
+        idle_retests_enabled: false,
+        in_catchup_set: false,
+        route_priority: 'not_routed',
+        route_position: null,
+        pending_seed_count: 2,
+        claimable_seed_available: false,
+        live_lease_count: 0,
+        newer_canonical_work_pending: false,
+        least_covered_admitted: null,
+        decision: 'not_in_cohort',
+        // A drifted platform must not leak challenge material through MCP.
+        pending_seeds: ['9223372036854775002'],
+      },
+      latest_ticket_status: null,
+      latest_ticket_validator_hotkey: null,
+      latest_ticket_updated_at: null,
+      latest_ticket_failure_reason: null,
+      terminal_ticket_count: 0,
+      latest_confirmation_composite: null,
+      latest_confirmation_recorded_at: null,
+      confirmation_dataset: { prompt: 'must-not-escape' },
+    }
+    const fetchMock = vi.fn().mockResolvedValue(Response.json(diagnostic))
+    vi.stubGlobal('fetch', fetchMock)
+    const { client, server } = await connect([BACKROOM_READ_SCOPE])
+    try {
+      const response = await client.callTool({
+        name: 'get_continual_retest_diagnostic',
+        arguments: { agentId: newerId },
+      })
+      expect(response.isError).not.toBe(true)
+      expect(readJsonResult(response)).toMatchObject({
+        agent_id: newerId,
+        owner_representative_id: representativeId,
+        admission_reason: 'owner_suppressed',
+        in_raw_wave: false,
+        in_emission_set: false,
+        in_retest_cohort: false,
+        representative_selection: 'official_composite',
+        cohort_cutoff: { gap: -0.23628, within_tie_band: true },
+        claim: { decision: 'not_in_cohort', route_priority: 'not_routed', pending_seed_count: 2 },
+        raw_confirmation_seeds: ['9223372036854775001'],
+      })
+      const text = readTextResult(response)
+      expect(text).not.toContain('9223372036854775002')
+      expect(text).not.toContain('must-not-escape')
+      expect(text).not.toContain('platform-admin-token')
+
+      // The Platform admin bearer stays on the Worker's upstream call.
+      const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+      expect(url).toBe(
+        `https://platform-api.heyditto.ai/api/v1/admin/agents/${newerId}/continual-retest-diagnostic`,
+      )
+      expect(init.method ?? 'GET').toBe('GET')
+      expect(init.headers).toMatchObject({ Authorization: 'Bearer platform-admin-token' })
+
+      // A name or hotkey is not an exact agent UUID; nothing reaches Platform.
+      const invalid = await client.callTool({
+        name: 'get_continual_retest_diagnostic',
+        arguments: { agentId: 'Gryffindor_v3' },
+      })
+      expect(invalid.isError).toBe(true)
+      expect(fetchMock).toHaveBeenCalledTimes(1)
+
+      // The score reads that omit owner-generation and cohort facts say where
+      // to find them, in on-demand help rather than the catalog.
+      for (const tool of ['get_agent_scores', 'get_leaderboard']) {
+        const help = await client.callTool({ name: 'get_backroom_tool_help', arguments: { tool } })
+        expect((readJsonResult(help) as { guidance: string }).guidance).toContain(
+          'get_continual_retest_diagnostic',
+        )
+      }
+    } finally {
+      await client.close()
+      await server.close()
+    }
+  })
+
   it('resolves an owner footprint on read scope alone, with standings joined', async () => {
     process.env.DITTO_ADMIN_API_TOKEN = 'platform-admin-token'
     const agentId = '55555555-5555-4555-8555-555555555555'
