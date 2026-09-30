@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.331.2 (2026-09-30)
+
+### Bug Fixes
+
+- **screener**: Classify provider limits without logging upstream text
+  ([#2589](https://github.com/ditto-assistant/ditto-subnet/pull/2589),
+  [`95b0998`](https://github.com/ditto-assistant/ditto-subnet/commit/95b0998ec75136d90569a557e1b228565086b4ac))
+
+
 ## v0.331.1 (2026-09-30)
 
 ### Bug Fixes
