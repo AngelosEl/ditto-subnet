@@ -34,7 +34,7 @@ def service_first_weights(
     if not burn_hotkey:
         raise ValueError("burn hotkey is required")
     if service_bps and (
-        not collector_verified
+        collector_verified is not True
         or not collector_hotkey
         or collector_hotkey == burn_hotkey
     ):
@@ -49,7 +49,13 @@ def service_first_weights(
     miners = {h: w for h, w in weights.items() if h not in excluded and w > 0}
     service = service_bps / 10_000
     miner = (1 - service) * (1 - burn_share) * paid_miner_fraction if miners else 0
-    result = {h: w / sum(miners.values()) * miner for h, w in miners.items() if miner}
+    result: dict[str, float] = {}
+    if miner:
+        # Scaling first avoids finite individual weights overflowing their sum.
+        maximum = max(miners.values())
+        scaled = {h: w / maximum for h, w in miners.items()}
+        total = math.fsum(scaled.values())
+        result = {h: w / total * miner for h, w in scaled.items()}
     if service:
         result[collector_hotkey] = service
     residual = 1 - service - miner

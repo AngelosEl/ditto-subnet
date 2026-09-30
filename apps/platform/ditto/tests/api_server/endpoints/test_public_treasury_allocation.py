@@ -99,8 +99,8 @@ async def test_legacy_forecast_retains_released_share_denominator(
                 parent_revision=0,
                 settings={
                     "gm_bps": 100,
-                    "treasury_hotkey": "collector",
-                    "treasury_coldkey": "cold",
+                    "treasury_hotkey": "legacy private arbitrary text",
+                    "treasury_coldkey": "legacy private coldkey text",
                     "gm_account_ref": "private-account",
                 },
                 checksum="c" * 64,
@@ -124,3 +124,10 @@ async def test_legacy_forecast_retains_released_share_denominator(
     assert body["denominator"] == "released_miner_emission"
     assert body["forecast_service_share"] == 0
     assert body["forecast_burn_share"] == 1
+    assert body["collector_hotkey"] is None
+    assert body["collector_coldkey"] is None
+    audit = public_details(
+        "/api/v1/admin/treasury-settings",
+        {"settings": {"treasury_hotkey": "legacy private arbitrary text"}},
+    )
+    assert "legacy private" not in str(audit)

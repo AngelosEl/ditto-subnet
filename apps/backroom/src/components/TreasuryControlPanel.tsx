@@ -242,7 +242,7 @@ export function TreasuryControlPanel({
                 />
               </label>
               <label>
-                Private service account reference
+                Private service account reference (optional)
                 <input
                   className={inputClass}
                   value={bucket.service_account_ref ?? ''}

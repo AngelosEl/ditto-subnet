@@ -10,7 +10,7 @@ from ditto.api_models.treasury_allocation import (
     PublicServiceBucket,
     PublicTreasuryAllocation,
 )
-from ditto.api_models.treasury_settings import TreasurySettings
+from ditto.api_models.treasury_settings import TreasurySettings, public_wallet_address
 from ditto.api_server.burn_settings import settings_from_row
 from ditto.api_server.dependencies import get_session
 from ditto.db.models import TreasurySettingsRevision
@@ -52,8 +52,8 @@ async def get_public_treasury_allocation(
         forecast_miner_share=(1 - fraction) * (1 - burn),
         burn_revision=burn_row.revision if burn_row else 0,
         burn_of_miner_remainder=burn,
-        collector_hotkey=policy.treasury_hotkey,
-        collector_coldkey=policy.treasury_coldkey,
+        collector_hotkey=public_wallet_address(policy.treasury_hotkey),
+        collector_coldkey=public_wallet_address(policy.treasury_coldkey),
         sweep_interval_hours=policy.sweep_interval_hours,
         buckets=[
             PublicServiceBucket(

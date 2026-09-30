@@ -146,6 +146,9 @@ wallet/rule changes. Public addresses are syntax checked even in shadow mode;
 this does not prove SS58 checksum, custody or chain registration.
 Billing account references, private actors and reasons stay out of the public
 allocation projection and public policy details.
+Billing account references are optional for v2 holding-wallet allocation;
+they become relevant to provider reconciliation, not collecting emissions
+for later manually signed purchases. Legacy v1 payment prerequisites remain.
 
 `GET /api/v1/public/treasury-allocation` and the dashboard **Gamma · Beta** page
 show configured service allocations, a service-first forecast, collector and

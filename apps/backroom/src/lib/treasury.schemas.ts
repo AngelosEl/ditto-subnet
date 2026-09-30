@@ -135,12 +135,6 @@ export const treasurySettingsSchema = z
             message: 'nonzero service allocation requires holding coldkey',
           })
         }
-        if (bucket.bucket_id === 'gm_credits' && bucket.allocation_bps && !bucket.service_account_ref) {
-          context.addIssue({
-            code: 'custom',
-            message: 'GM allocation requires account reference',
-          })
-        }
       }
       if (value.max_daily_outflow_rao || value.max_single_topup_rao || value.max_slippage_bps) {
         context.addIssue({

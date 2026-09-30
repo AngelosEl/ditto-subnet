@@ -19,6 +19,11 @@ MAX_SERVICE_BPS = 1_000
 PUBLIC_ADDRESS_PATTERN = r"^[1-9A-HJ-NP-Za-km-z]{47,48}$"
 
 
+def public_wallet_address(value: str | None) -> str | None:
+    """Legacy policies allowed free text; never publish it as an address."""
+    return value if value and re.fullmatch(PUBLIC_ADDRESS_PATTERN, value) else None
+
+
 class TreasuryPayeeRule(BaseModel):
     """An exact chain-payment classification, never provider credit proof."""
 
@@ -65,12 +70,6 @@ class TreasuryServiceBucket(BaseModel):
             raise ValueError("duplicate or ambiguous payee rule")
         if self.allocation_bps and not self.holding_coldkey:
             raise ValueError("nonzero service allocation requires holding coldkey")
-        if (
-            self.bucket_id == "gm_credits"
-            and self.allocation_bps
-            and not self.service_account_ref
-        ):
-            raise ValueError("GM allocation requires an account reference")
         return self
 
 

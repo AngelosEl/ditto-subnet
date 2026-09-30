@@ -94,7 +94,7 @@ describe('shadow treasury policy versions', () => {
     expect(
       treasurySettingsSchema.safeParse({ ...v2, service_buckets: [{ ...gm, service_account_ref: null }] })
         .success,
-    ).toBe(false)
+    ).toBe(true)
     expect(
       treasurySettingsSchema.safeParse({
         ...v2,

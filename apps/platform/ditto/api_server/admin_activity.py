@@ -25,7 +25,7 @@ from ditto.api_models.inference_concurrency_settings import InferenceConcurrency
 from ditto.api_models.queue_policy_settings import QueuePolicySettings
 from ditto.api_models.screener_provider_settings import ScreenerProviderSettings
 from ditto.api_models.screener_review_settings import ScreenerReviewSettings
-from ditto.api_models.treasury_settings import TreasurySettings
+from ditto.api_models.treasury_settings import TreasurySettings, public_wallet_address
 from ditto.api_models.validator_slot_settings import ValidatorSlotSettings
 from ditto.db.models import AdminActivity, AdminActivityOutcome
 
@@ -312,6 +312,11 @@ def public_details(action: str, body: object) -> dict:
                     }
             if key == "treasury-settings":
                 # Billing account identifiers never enter the public audit feed.
+                for field in ("treasury_hotkey", "treasury_coldkey"):
+                    if field in result["settings"]:
+                        result["settings"][field] = public_wallet_address(
+                            result["settings"][field]
+                        )
                 for bucket in result["settings"].get("service_buckets", []):
                     bucket.pop("service_account_ref", None)
         except (ValidationError, ValueError, TypeError):

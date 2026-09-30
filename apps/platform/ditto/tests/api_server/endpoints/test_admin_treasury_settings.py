@@ -135,7 +135,7 @@ async def test_v2_service_wallets_are_shadow_only_and_v1_history_is_preserved(
                 "purpose": "GM inference credit",
                 "allocation_bps": 1000,
                 "holding_coldkey": ("5" + "c" * 47),
-                "service_account_ref": "reviewed-gm-account",
+                "service_account_ref": None,
             },
             {
                 "bucket_id": "bitsec_audits",
@@ -174,11 +174,6 @@ async def test_v2_service_wallets_are_shadow_only_and_v1_history_is_preserved(
                     "allocation_bps": 1,
                     "holding_coldkey": ("5" + "d" * 47),
                 },
-            ]
-        },
-        {
-            "service_buckets": [
-                {**settings["service_buckets"][0], "service_account_ref": None},
             ]
         },
         {

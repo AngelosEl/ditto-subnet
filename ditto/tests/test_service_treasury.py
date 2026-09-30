@@ -45,6 +45,19 @@ def test_empty_and_unpaid_miner_share_does_not_enlarge_collector():
     )
 
 
+def test_finite_large_weights_cannot_lose_the_miner_share_to_sum_overflow():
+    vector = service_first_weights(
+        {"miner-a": 1e308, "miner-b": 1e308},
+        service_bps=1000,
+        burn_share=0,
+        collector_hotkey="collector",
+        collector_verified=True,
+        burn_hotkey="burn",
+    )
+    assert vector == pytest.approx({"miner-a": 0.45, "miner-b": 0.45, "collector": 0.1})
+    assert sum(vector.values()) == pytest.approx(1)
+
+
 def test_unverified_or_burn_collector_cannot_receive_funds():
     with pytest.raises(ValueError, match="independently verified"):
         service_first_weights(
