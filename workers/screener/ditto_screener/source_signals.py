@@ -1811,9 +1811,16 @@ def find_decisive_malicious_source(
     files: Iterable[tuple[str, str]],
     *,
     explicitly_executable_paths: frozenset[str] = frozenset(),
-    include_test_only: bool = False,
+    include_test_only: bool = True,
 ) -> list[dict[str, object]]:
-    """Return high-confidence, location-only findings for pre-build quarantine."""
+    """Return high-confidence, location-only findings for pre-build quarantine.
+
+    Rust ``#[cfg(test)]`` items are scanned by default: a build can compile
+    them into the served binary (``rustc --cfg test``, RUSTFLAGS from an ARG,
+    a base image, or a fetched script) without any text that proves it
+    otherwise. Only a proof step that separately masks test-only code may pass
+    ``include_test_only=False``.
+    """
     findings: list[dict[str, object]] = []
     for path, text in sorted(files, key=lambda item: _path_priority(item[0])):
         if path.removeprefix(
@@ -1823,11 +1830,8 @@ def find_decisive_malicious_source(
         lines = text.splitlines()
         if not lines:
             continue
-        # Rust test modules can live in the same file as the served entrypoint.
-        # The legacy preflight scans that entire file, so a test-only fixture
-        # must be blanked before its path and effect roles are paired. Keep
-        # line positions for the location-only finding and leave adjacent
-        # production items visible.
+        # Opt-in only: blank test-only items before pairing roles, keeping
+        # line positions and adjacent production items.
         if not include_test_only and path.casefold().endswith(".rs"):
             test_item_lines = _rust_test_item_lines(
                 mask_comments(text, path).splitlines()
