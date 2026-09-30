@@ -75,6 +75,32 @@ composite, modified z-score and evidence. Held agents are not replayed. Each
 row is judged against today's ledger, not the ledger at its own finalization.
 The tool opens no hold and changes no setting.
 
+`get_continual_retest_diagnostic` explains, for one exact agent UUID, what
+`get_leaderboard` and `get_agent_scores` cannot: why a scored generation is or
+is not its owner's emission representative, and why it is or is not earning
+shared-seed retests. It reads
+`GET /api/v1/admin/agents/{agent_id}/continual-retest-diagnostic` with
+`backroom:read`. The response carries the canonical and official continual
+composites with their sample counts and completed-wave depth, the same-owner
+family with the representative, its margin and the `owner_family_key` term that
+selected it (`representative_selection`), membership in the raw wave, folded
+emission set and resolved retest cohort, and the cohort and emission cutoffs as
+`{composite, gap, tie_band, within_tie_band}`. `admission_reason` is the
+exclusion reason. A negative `cohort_cutoff.gap` on an agent still outside the
+cohort is owner suppression, not a score it failed to reach;
+`same_owner_challenger` is the bounded catch-up admission, not a second
+emission slot. `claim` runs the issuance lane's own gates for an empty validator
+hotkey, so no lease, event or slot is attributed. It gives the scheduled round,
+catch-up set, spare-capacity window, idle-retest gate, route priority and
+`decision`, the first gate a polling validator would hit now. A
+`chain_unavailable` decision means the block read failed, not that the lane is
+idle. The tool also returns ticket counts and the latest ticket and accepted
+result. Outstanding work is only a count, `pending_seed_count`. Pending seed
+values, confirmation datasets, prompts and answer keys never leave Platform, and
+unknown upstream fields are stripped. The raw and folded seed IDs it returns
+are already-scored confirmation seeds, as exact decimal strings. The snapshot
+grants no work and changes nothing.
+
 `https://backroom.dittobench.ai/mcp` is an OAuth-protected Streamable HTTP MCP
 server exposing the same operations as the console: screening quarantines and
 disputes, validator queue/slot/inference policy, benchmark rollouts, scoring
