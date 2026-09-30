@@ -25,9 +25,10 @@ revisioned policy. No service bucket may borrow another bucket's allocation.
 
 ## Wallet identity and custody
 
-**Custody design still needs review before the active weight path is built.**
-This draft models one registered hotkey per service wallet. A simpler
-alternative is one registered collector hotkey and three separately controlled
+**Recommend one collector hotkey with three holding coldkeys, subject to custody
+review before the active weight path is built.** The current shadow schema
+instead models one registered hotkey per service wallet. The collector design
+uses one registered hotkey and three separately controlled
 holding coldkeys. Validators would route only the reviewed aggregate service
 share to the collector. After finality, a guarded, reconciled
 [`transfer_stake`](https://github.com/latent-to/developer-docs/blob/main/docs/navigating-subtensor/subtensor-extrinsics.md)
@@ -38,24 +39,29 @@ registration slots. It introduces a collector custody window and requires
 exactly-once sweep accounting, independent signer review, and a tested rollback.
 Holding SN118 stake is not the same as a spendable TAO balance; a provider
 payment would need a separate reviewed conversion and transfer.
-The current shadow schema describes the direct-recipient option only; it must
-be revised or explicitly approved before any validator implementation.
+It is preferable because the validator has one bounded treasury recipient and
+service wallets do not occupy separate miner registration slots. The current
+shadow schema describes the direct-recipient option only; it must be revised
+for the recommended custody model or explicitly approved before any validator
+implementation.
 
-Each purpose gets its own dedicated, publicly identified receiving wallet:
+Under the recommended design, each purpose gets a dedicated, publicly
+identified holding coldkey:
 
-| Bucket | Purpose | Initial bps | Receiving wallet | Spend destination |
+| Bucket | Purpose | Initial bps | Holding wallet | Spend destination |
 | --- | --- | ---: | --- | --- |
-| `gm_credits` | GM inference credit | 1,000 proposed | new dedicated SN118 hotkey and coldkey | current GM Billing instructions |
-| `bitsec_audits` | independent security audits | 0 | separate new hotkey and coldkey | approved Bitsec invoice |
-| `bitcast_ads` | advertising campaigns | 0 | separate new hotkey and coldkey | approved Bitcast campaign invoice |
+| `gm_credits` | GM inference credit | 1,000 proposed | dedicated coldkey holding swept SN118 stake | current GM Billing instructions |
+| `bitsec_audits` | independent security audits | 0 | separate coldkey holding swept SN118 stake | approved Bitsec invoice |
+| `bitcast_ads` | advertising campaigns | 0 | separate coldkey holding swept SN118 stake | approved Bitcast campaign invoice |
 
-Each receiving hotkey must be registered on SN118 and independently verified
-as owned by its reviewed coldkey, distinct from the subnet owner's burn hotkey
-and the other service hotkeys. A wallet label or an SS58 address alone does
-not prove custody. The private signing keys must have separate access scopes;
-the Platform and Backroom retain no signing authority. The current single-key
-signer is unsuitable for this multi-wallet policy without an explicit custody
-and recovery review. The draft host-activation PR #2327 must stay dormant.
+The collector hotkey must be registered on SN118 and independently verified
+as owned by the collector coldkey, distinct from the subnet owner's burn
+hotkey. Each holding coldkey must be independently controlled and distinct
+from the collector and the other holders. A wallet label or SS58 address alone
+does not prove custody. Signing keys need separate access scopes; Platform and
+Backroom retain no signing authority. The current single-key signer cannot
+manage all bucket wallets without a custody and recovery review. Draft
+host-activation PR #2327 stays dormant.
 
 The existing personal wallet
 `5Ecr5EGwvg2Xue2MdeJeCVSMLYWYuGcFb7y41eo7rQy3mGDN` is historical
