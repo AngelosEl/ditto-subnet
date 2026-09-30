@@ -656,6 +656,11 @@ def _js_state_after(
             # operators but start one as prefix operators after a line break.
             run = len(code) - len(code.rstrip(last))
             return (True if run == 1 else None), ""
+        if last == ".":
+            # ``1.`` is a numeric literal: a following ``/`` divides. ``...``
+            # spreads an expression, so a regex may follow. ``obj.`` needs a
+            # property name, so ``obj./x/`` is not valid and stays undecidable.
+            return {None: False, False: True}.get(_js_member_dot(code)), ""
         if typescript and last == ">" and not code.endswith("=>"):
             # ``f<T> / x`` divides an instantiation expression.
             return None, ""

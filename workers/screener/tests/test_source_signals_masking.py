@@ -438,12 +438,30 @@ def test_an_undecidable_javascript_slash_never_hides_code(
         ("src/a.ts", "if (!/'/.test(s)) run(); // c\n"),
         ("src/a.ts", "const f = (): RegExp => /'/; // c\n"),
         ("src/a.ts", "const n = total!; const h = n / 2; // c\n"),
+        # A ``/`` after a numeric literal, including a trailing-dot float
+        # (``1.``), divides. Node runs each of these; treating the slash as a
+        # regular expression opener folded the rest of the line away.
+        ("src/a.js", "const q = 1. / 2; const a = '/'; // c\n"),
+        ("src/a.ts", "const q = 10. / 2; const a = '/'; // c\n"),
     ],
 )
 def test_decidable_javascript_slashes_keep_their_masking(
     path: str, source: str
 ) -> None:
     assert mask_comments(source, path) == _blank(source, "// c")
+
+
+def test_float_division_cannot_hide_served_code() -> None:
+    """``1. / 2`` divides; node runs ``run()``. A regex guess blanked it.
+
+    The trailing dot is a numeric literal's decimal point, so the following
+    slash cannot open a regular expression. Treating it as one consumed the
+    rest of the line, including the string quotes after it, and blanked the
+    served call that followed.
+    """
+    source = 'const half = 1. / 2; const a = "/"; const b = "//"; run(half, a, b);\n'
+
+    assert "run(half, a, b)" in mask_comments(source, "src/server.js")
 
 
 def test_object_literal_division_cannot_hide_a_served_credential_read() -> None:
