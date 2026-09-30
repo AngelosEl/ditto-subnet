@@ -614,9 +614,11 @@ file. Executable and build files fill the lead cap before docs and data
 fixtures, which keep their leads in whatever capacity remains. Test-named
 modules count as executable source, and apart from the two keep-preference
 fingerprints that already skip them, fingerprints still scan Rust test-only
-items. Source text cannot prove either unserved: a runtime-loaded path, a base
-image, or a computed build value can serve them without any text the archive
-shows.
+items. The decisive pre-build preflight also scans Rust test-only items and
+follows `cfg(test)`-gated `include!` and `#[path]` targets. Source text cannot
+prove any of these unserved: a runtime-loaded path, a base image, or a computed
+build value (`rustc --cfg test`, RUSTFLAGS from an ARG) can serve them without
+any text the archive shows.
 
 The following are insufficient on their own:
 

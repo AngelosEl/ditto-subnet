@@ -1592,9 +1592,10 @@ def test_decisive_malicious_preflight_ignores_inert_regression_material() -> Non
 
 
 @pytest.mark.parametrize("mode", ["off", "shadow", "enforce"])
-def test_rust_cfg_test_cross_user_fixture_does_not_hold_preflight(
+def test_rust_cfg_test_cross_user_fixture_holds_preflight(
     tmp_path: Path, mode: str
 ) -> None:
+    # The build could compile the test module in; nothing proves it off.
     source = (
         "fn main() { serve(); }\n"
         "fn serve() { call_model(); }\n"
@@ -1624,7 +1625,129 @@ def test_rust_cfg_test_cross_user_fixture_does_not_hold_preflight(
         )
     )
 
-    assert repo.malicious_preflight(artifact_sha256="a" * 64, mode=mode) is None
+    observation = repo.malicious_preflight(artifact_sha256="a" * 64, mode=mode)
+
+    assert observation is not None
+    assert "cross_user_access" in observation.categories
+
+
+# Maintainer counterexample on #2565: the decisive preflight skipped a
+# cfg(test) function that a `rustc --cfg test` build serves as main.
+_CFG_TEST_SECRET_MAIN = (
+    '#[cfg(test)]\nfn main() { let _ = read_secret_path("/root/.ssh/id_rsa"); }\n'
+)
+_RUSTC_CFG_TEST_BUILD = (
+    b"FROM rust:1 AS build\n"
+    b"WORKDIR /src\n"
+    b"COPY src ./src\n"
+    b"RUN rustc --cfg test src/main.rs -o /app/server\n"
+    b"FROM debian:trixie-slim\n"
+    b"COPY --from=build /app/server /app/server\n"
+    b'CMD ["/app/server"]\n'
+)
+
+
+def test_decisive_detector_reads_cfg_test_items_by_default() -> None:
+    findings = find_decisive_malicious_source([("src/main.rs", _CFG_TEST_SECRET_MAIN)])
+
+    assert {finding["category"] for finding in findings} == {
+        "credential_access",
+        "cross_user_access",
+    }
+
+
+@pytest.mark.parametrize("mode", ["off", "shadow", "enforce"])
+def test_preflight_holds_cfg_test_code_a_rustc_cfg_test_build_serves(
+    tmp_path: Path, mode: str
+) -> None:
+    archive = _archive_files(
+        tmp_path,
+        {
+            "Dockerfile": _RUSTC_CFG_TEST_BUILD,
+            "src/main.rs": _CFG_TEST_SECRET_MAIN.encode(),
+        },
+    )
+
+    observation = TarSourceRepository(
+        str(archive), static_preflight_v2_mode=mode
+    ).malicious_preflight(artifact_sha256="a" * 64, mode=mode)
+
+    assert observation is not None
+    assert {"credential_access", "cross_user_access"} <= set(observation.categories)
+
+
+@pytest.mark.parametrize("mode", ["off", "shadow", "enforce"])
+def test_inert_ordinary_rust_test_module_raises_no_preflight_finding(
+    tmp_path: Path, mode: str
+) -> None:
+    # Scanning test code is safe for ordinary tests: even compiled in, they
+    # touch no credential, host path, control socket, or exfiltration sink.
+    source = (
+        "pub fn parse_answer(text: &str) -> u32 {\n"
+        "    text.trim().parse().unwrap_or(0)\n"
+        "}\n"
+        "\n"
+        "fn main() {\n"
+        '    println!("{}", parse_answer("42"));\n'
+        "}\n"
+        "\n"
+        "#[cfg(test)]\n"
+        "mod tests {\n"
+        "    use super::*;\n"
+        "\n"
+        "    #[test]\n"
+        "    fn parses_answer() {\n"
+        '        assert_eq!(parse_answer(" 42 "), 42);\n'
+        '        assert_eq!(parse_answer("x"), 0);\n'
+        "    }\n"
+        "}\n"
+    )
+    archive = _archive_files(
+        tmp_path,
+        {"Dockerfile": _RUSTC_CFG_TEST_BUILD, "src/main.rs": source.encode()},
+    )
+
+    assert find_decisive_malicious_source([("src/main.rs", source)]) == []
+    assert (
+        TarSourceRepository(
+            str(archive), static_preflight_v2_mode=mode
+        ).malicious_preflight(artifact_sha256="a" * 64, mode=mode)
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    "kit", ["dittobench-starter-kit", "dittobench-coding-starter-kit"]
+)
+def test_stock_starter_kits_raise_no_decisive_finding_with_test_code(
+    tmp_path: Path, kit: str
+) -> None:
+    root = Path(__file__).resolve().parents[3] / "miners" / kit
+    if not root.is_dir():
+        pytest.skip(f"{kit} is not part of this checkout")
+    files: dict[str, bytes] = {}
+    for relative in starter_files(root):
+        raw = (root / relative).read_bytes()
+        try:
+            raw.decode("utf-8")
+        except UnicodeDecodeError:
+            continue
+        files[relative] = raw
+    text = [(path, raw.decode()) for path, raw in files.items()]
+
+    # Test code is scanned now, so the kits' own tests must stay inert.
+    assert (
+        find_decisive_malicious_source(
+            text, explicitly_executable_paths=frozenset(files)
+        )
+        == []
+    )
+    archive = str(_archive_files(tmp_path, files))
+    for mode in ("off", "shadow", "enforce"):
+        repository = TarSourceRepository(archive, static_preflight_v2_mode=mode)
+        assert (
+            repository.malicious_preflight(artifact_sha256="a" * 64, mode=mode) is None
+        )
 
 
 def test_rust_cfg_test_does_not_hide_adjacent_served_cross_user_access() -> None:
@@ -1636,7 +1759,9 @@ def test_rust_cfg_test_does_not_hide_adjacent_served_cross_user_access() -> None
         'fn serve() { let path = "/root/private"; read(path); }\n'
     )
 
-    findings = find_decisive_malicious_source([("src/baseline.rs", source)])
+    findings = find_decisive_malicious_source(
+        [("src/baseline.rs", source)], include_test_only=False
+    )
 
     assert any(
         finding["category"] == "cross_user_access"
@@ -1654,7 +1779,9 @@ def test_rust_test_literal_brace_cannot_hide_following_served_item() -> None:
         'fn serve() { let path = "/root/private"; read(path); }\n'
     )
 
-    findings = find_decisive_malicious_source([("src/baseline.rs", source)])
+    findings = find_decisive_malicious_source(
+        [("src/baseline.rs", source)], include_test_only=False
+    )
 
     assert any(
         finding["category"] == "cross_user_access"
@@ -1705,7 +1832,9 @@ def test_rust_attribute_text_inside_raw_string_cannot_hide_served_item() -> None
         'fn serve() { let path = "/root/private"; read(path); }\n'
     )
 
-    findings = find_decisive_malicious_source([("src/baseline.rs", source)])
+    findings = find_decisive_malicious_source(
+        [("src/baseline.rs", source)], include_test_only=False
+    )
 
     assert any(
         finding["category"] == "cross_user_access"
@@ -1723,7 +1852,9 @@ def test_rust_cfg_branch_that_can_run_in_production_remains_decisive(
 ) -> None:
     source = f'{attribute}\nfn serve() {{ let path = "/root/private"; read(path); }}\n'
 
-    findings = find_decisive_malicious_source([("src/baseline.rs", source)])
+    findings = find_decisive_malicious_source(
+        [("src/baseline.rs", source)], include_test_only=False
+    )
 
     assert any(finding["category"] == "cross_user_access" for finding in findings)
 
@@ -2124,9 +2255,11 @@ def test_repository_preflight_ignores_dev_dependency_build_script(
         '#[cfg(test)]\ninclude!("../tests/payload.rs");\n',
     ],
 )
-def test_repository_preflight_ignores_test_only_rust_indirections(
+def test_repository_preflight_follows_test_only_rust_indirections(
     tmp_path: Path, runtime_source: str
 ) -> None:
+    # A cfg(test)-gated include or #[path] module is compiled whenever the
+    # build turns cfg(test) on, so its target is scanned like runtime source.
     repo = TarSourceRepository(
         str(
             _archive_files(
@@ -2145,8 +2278,9 @@ def test_repository_preflight_ignores_test_only_rust_indirections(
     runtime_paths = repo._explicit_runtime_paths()
     observation = repo.malicious_preflight(artifact_sha256="a" * 64)
 
-    assert "tests/payload.rs" not in runtime_paths
-    assert observation is None
+    assert "tests/payload.rs" in runtime_paths
+    assert observation is not None
+    assert observation.categories == ("malicious_build",)
 
 
 def test_repository_preflight_follows_unguarded_rust_path_attribute(

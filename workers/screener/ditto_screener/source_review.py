@@ -2319,7 +2319,7 @@ def _rust_runtime_references(source: str) -> tuple[set[str], bool]:
             ("identifier", "include"),
             ("punctuation", "!"),
             ("punctuation", "("),
-        ] and not _rust_reference_is_test_only(tokens, index):
+        ]:
             argument = index + 3
             if argument < len(tokens) and tokens[argument][0] == "string":
                 references.add(tokens[argument][1])
@@ -2358,7 +2358,7 @@ def _rust_runtime_references(source: str) -> tuple[set[str], bool]:
             ("punctuation", "["),
             ("identifier", "path"),
             ("punctuation", "="),
-        ] and not _rust_reference_is_test_only(tokens, index):
+        ]:
             argument = index + 4
             if argument < len(tokens) and tokens[argument][0] == "string":
                 references.add(tokens[argument][1])
@@ -2366,34 +2366,6 @@ def _rust_runtime_references(source: str) -> tuple[set[str], bool]:
                 unresolved = True
         index += 1
     return references, unresolved
-
-
-def _rust_reference_is_test_only(
-    tokens: list[tuple[str, str]], reference_index: int
-) -> bool:
-    """Return whether a Rust source indirection is guarded only for tests."""
-    start = reference_index - 1
-    while start >= 0 and tokens[start] not in {
-        ("punctuation", ";"),
-        ("punctuation", "{"),
-        ("punctuation", "}"),
-    }:
-        start -= 1
-    start += 1
-
-    cfg_test = [
-        ("punctuation", "#"),
-        ("punctuation", "["),
-        ("identifier", "cfg"),
-        ("punctuation", "("),
-        ("identifier", "test"),
-        ("punctuation", ")"),
-        ("punctuation", "]"),
-    ]
-    return any(
-        tokens[cursor : cursor + len(cfg_test)] == cfg_test
-        for cursor in range(start, reference_index)
-    )
 
 
 def _is_standalone_shell_script(path: str) -> bool:
@@ -3008,8 +2980,11 @@ class TarSourceRepository:
                 all_readable[name] = text
                 if not trusted and name in runtime_paths:
                     readable.append((name, text))
+        # Test-only Rust items stay in scope: no build flag can be proven off.
         legacy_matches = find_decisive_malicious_source(
-            readable, explicitly_executable_paths=runtime_paths
+            readable,
+            explicitly_executable_paths=runtime_paths,
+            include_test_only=True,
         )
         if not legacy_matches and mode == "off":
             return None
