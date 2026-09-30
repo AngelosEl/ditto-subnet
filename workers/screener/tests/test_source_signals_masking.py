@@ -443,12 +443,34 @@ def test_an_undecidable_javascript_slash_never_hides_code(
         # regular expression opener folded the rest of the line away.
         ("src/a.js", "const q = 1. / 2; const a = '/'; // c\n"),
         ("src/a.ts", "const q = 10. / 2; const a = '/'; // c\n"),
+        ("src/a.js", "x = a < b; y = c <d; // c\n"),
     ],
 )
 def test_decidable_javascript_slashes_keep_their_masking(
     path: str, source: str
 ) -> None:
     assert mask_comments(source, path) == _blank(source, "// c")
+
+
+# Babel parses each of these as a JSX element whose text holds ``//``; the
+# ``run()`` after it is code. Only an ASCII letter after ``<`` used to count as
+# JSX, so these read as a comparison and the JSX text as a comment.
+@pytest.mark.parametrize(
+    ("opening", "closing"),
+    [
+        pytest.param("< div>", "</div>", id="blank-before-name"),
+        pytest.param("</* c */div>", "</div>", id="comment-before-name"),
+        pytest.param("<\ndiv>", "</div>", id="line-break-before-name"),
+        pytest.param("<\u00e9>", "</\u00e9>", id="non-ascii-letter"),
+        pytest.param("<\u216b>", "</\u216b>", id="letter-number"),
+    ],
+)
+def test_jsx_text_cannot_hide_code_after_any_expression_start_angle(
+    opening: str, closing: str
+) -> None:
+    source = f"const a = {opening}a // b{closing}; run();\n"
+
+    assert "run();" in mask_comments(source, "src/app.js")
 
 
 def test_float_division_cannot_hide_served_code() -> None:

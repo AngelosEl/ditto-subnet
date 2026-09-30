@@ -495,7 +495,6 @@ _JS_CONDITION_KEYWORDS = frozenset({"if", "while", "for", "with"})
 _JS_KEYWORDS = (
     _JS_EXPRESSION_KEYWORDS | _JS_CONTEXTUAL_KEYWORDS | _JS_CONDITION_KEYWORDS
 )
-_JS_JSX_START = re.compile(r"[A-Za-z_$>]")
 
 
 def _lex_javascript(text: str, *, typescript: bool = False) -> bytearray | None:
@@ -509,9 +508,9 @@ def _lex_javascript(text: str, *, typescript: bool = False) -> bytearray | None:
     line fold real code into a regular expression, string, or comment, so the
     file is left unmasked. So is any construct that cannot be closed on a
     valid program (a string or regular expression reaching a line end,
-    unbalanced brackets, a JSX-looking ``<Tag``) and any HTML-like comment
-    (``<!--``, ``-->``), which a script reads as a comment and a module as
-    operators.
+    unbalanced brackets, a ``<`` where an expression starts, which can only
+    open JSX or a TypeScript assertion) and any HTML-like comment (``<!--``,
+    ``-->``), which a script reads as a comment and a module as operators.
     """
     kinds = bytearray(len(text))
     # Frames: "(" / "(if" for parentheses, "(?" after ``await`` (a call or a
@@ -623,7 +622,11 @@ def _lex_javascript(text: str, *, typescript: bool = False) -> bytearray | None:
             # operand, where it divides.
             expression_start = None
         elif value == "<":
-            if expression_start is not False and _JS_JSX_START.match(text, start + 1):
+            if expression_start is not False:
+                # Only JSX (or a TypeScript assertion or generic) puts ``<``
+                # where an expression starts, and JSX text is not code:
+                # Babel takes ``< div>``, ``</* c */div>`` and ``<é>`` as
+                # tags, so no test of the next character can rule JSX out.
                 return None
             expression_start = True
         index = end
