@@ -7,14 +7,29 @@ not reinterpret any stored v1 revision or turn the current signer prototype on.
 
 ## Economic contract
 
-Use basis points of the **released miner vector**, after the separately governed
-burn decision. For a released fraction `R = 1 - burn_share`, service bucket
-`i` receives `R * bucket_bps[i] / 10_000` of the miner vector. The remainder
-of `R` goes to eligible miners. An empty eligible vector still follows the
-existing burn fallback; it is never swept into a service wallet. At today's
-`burn_share=1`, every service bucket receives zero, regardless of its shadow
-target. Scoring recovery, screening admission, treasury allocation and burn
-changes are independent decisions.
+Carve approved service buckets from the **full miner emission vector before
+burn**. Let `S = sum(bucket_bps) / 10_000` and `B = burn_share`. Bucket `i`
+receives `bucket_bps[i] / 10_000` of that vector. The remaining `1 - S` is
+the virtual miner share: `B * (1 - S)` routes to the existing burn hotkey and
+`(1 - B) * (1 - S)` goes to eligible miners. At today's `B = 1`, the proposed
+GM 1,000 bps would still receive 10%; the other 90% would burn. An empty
+eligible miner vector burns its entire `(1 - S)` remainder while preserving
+approved service allocations. A missing, unregistered, or unverified service
+recipient fails closed under a separately reviewed policy; it must never
+silently redirect that allocation to another service or to a miner.
+Scoring recovery, screening admission, treasury allocation and burn changes
+remain independent decisions.
+
+For the initial GM-only proposal (`S = 0.10`):
+
+| Burn of miner remainder | GM | Burn | Eligible miners |
+| ---: | ---: | ---: | ---: |
+| 100% | 10% | 90% | 0% |
+| 50% | 10% | 45% | 45% |
+| 0% | 10% | 0% | 90% |
+
+These percentages are of the full miner emission vector. They are forecasts,
+not current routing: the active validator still sends all emission to burn.
 
 The requested initial target is **1,000 bps for GM credits**. Bitsec audit and
 Bitcast advertising buckets start at zero until their shares, budgets and
@@ -139,10 +154,11 @@ its own authenticated instructions and reconciliation proof exist.
    failure path across every serving validator version. If using a collector,
    rehearse the separate finalized-stake sweep and per-bucket reconciliation.
    Publish expected versus actual finalized receipts before positive routing.
-5. Coordinate a separate burn/release decision with screening and scoring
-   recovery. Activate one small, time-bounded allocation with an immediate
-   zero rollback, audit finalized funds and public receipts, then increase only
-   through a new reviewed revision. No automatic service payment is implied by
+5. Keep the burn setting and screening/scoring recovery independent. Activate
+   one small, time-bounded service allocation with an immediate zero rollback,
+   audit finalized funds and public receipts, then increase only through a new
+   reviewed revision. At 100% burn, only the miner remainder burns; approved
+   service allocations continue. No automatic service payment is implied by
    receipt of emissions.
 
 No part of this design opens screening admission, changes GCE capacity,

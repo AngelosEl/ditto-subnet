@@ -1,5 +1,12 @@
 # SN118 treasury activation and GM top-up runbook
 
+> **Superseded economics:** The 25+25 bps, released-share proposal below is
+> historical and must not be activated. The new service-wallet design is in
+> [sn118-service-treasury-v2.md](sn118-service-treasury-v2.md): GM begins at a
+> proposed 1,000 bps of the full miner emission vector, with service shares
+> carved out before burn. Even at 100% burn, approved service shares persist
+> and only the miner remainder burns. The signer remains blocked.
+
 **Current signer code blocks every live `execute` call before loading the
 signing key.** The allocation amounts, reviewer names, and later-leg quote
 metadata in its journal are operator supplied. A separate reviewed change
