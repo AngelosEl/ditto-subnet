@@ -17,8 +17,7 @@ const gm = {
   bucket_id: 'gm_credits',
   purpose: 'GM inference credit',
   allocation_bps: 1000,
-  receiving_hotkey: 'gm-hotkey',
-  receiving_coldkey: 'gm-coldkey',
+  holding_coldkey: 'gm-holding-coldkey',
   service_account_ref: 'reviewed-gm-account',
 }
 
@@ -31,12 +30,11 @@ const v2 = {
     bucket_id: 'bitsec_audits',
     purpose: 'independent security audits',
     allocation_bps: 0,
-    receiving_hotkey: null,
-    receiving_coldkey: null,
+    holding_coldkey: null,
     service_account_ref: null,
   }],
-  treasury_hotkey: null,
-  treasury_coldkey: null,
+  treasury_hotkey: 'collector-hotkey',
+  treasury_coldkey: 'collector-coldkey',
   gm_account_ref: null,
   max_daily_outflow_rao: 0,
   max_single_topup_rao: 0,
@@ -61,11 +59,16 @@ describe('shadow treasury policy versions', () => {
     expect(treasurySettingsSchema.safeParse({ ...v2, service_buckets: [{ ...gm, service_account_ref: null }] }).success).toBe(false)
     expect(treasurySettingsSchema.safeParse({ ...v2, service_buckets: [gm, {
       ...v2.service_buckets[1], allocation_bps: 1,
-      receiving_hotkey: 'bitsec-hotkey', receiving_coldkey: 'bitsec-coldkey',
+      holding_coldkey: 'bitsec-holding-coldkey',
     }] }).success).toBe(false)
     expect(treasurySettingsSchema.safeParse({ ...v2, service_buckets: [gm, {
       ...v2.service_buckets[1], allocation_bps: 1,
     }] }).success).toBe(false)
+    expect(treasurySettingsSchema.safeParse({ ...v2, service_buckets: [gm, {
+      ...v2.service_buckets[1], holding_coldkey: gm.holding_coldkey,
+    }] }).success).toBe(false)
+    expect(treasurySettingsSchema.safeParse({ ...v2, treasury_coldkey: gm.holding_coldkey }).success).toBe(false)
+    expect(treasurySettingsSchema.safeParse({ ...v2, treasury_hotkey: null }).success).toBe(false)
   })
 })
 

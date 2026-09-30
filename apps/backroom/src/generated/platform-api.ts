@@ -32685,12 +32685,10 @@ export interface components {
             allocation_bps: number;
             /** Bucket Id */
             bucket_id: string;
+            /** Holding Coldkey */
+            holding_coldkey?: string | null;
             /** Purpose */
             purpose: string;
-            /** Receiving Coldkey */
-            receiving_coldkey?: string | null;
-            /** Receiving Hotkey */
-            receiving_hotkey?: string | null;
             /** Service Account Ref */
             service_account_ref?: string | null;
         };

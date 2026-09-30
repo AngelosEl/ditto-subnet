@@ -127,13 +127,14 @@ async def test_v2_service_wallets_are_shadow_only_and_v1_history_is_preserved(
 
     settings: dict[str, Any] = {
         "allocation_version": 2,
+        "treasury_hotkey": "reviewed-collector-hotkey",
+        "treasury_coldkey": "reviewed-collector-coldkey",
         "service_buckets": [
             {
                 "bucket_id": "gm_credits",
                 "purpose": "GM inference credit",
                 "allocation_bps": 1000,
-                "receiving_hotkey": "gm-receiving-hotkey",
-                "receiving_coldkey": "gm-receiving-coldkey",
+                "holding_coldkey": "gm-holding-coldkey",
                 "service_account_ref": "reviewed-gm-account",
             },
             {
@@ -171,8 +172,7 @@ async def test_v2_service_wallets_are_shadow_only_and_v1_history_is_preserved(
                 {
                     **settings["service_buckets"][1],
                     "allocation_bps": 1,
-                    "receiving_hotkey": "bitsec-receiving-hotkey",
-                    "receiving_coldkey": "bitsec-receiving-coldkey",
+                    "holding_coldkey": "bitsec-holding-coldkey",
                 },
             ]
         },
@@ -195,10 +195,12 @@ async def test_v2_service_wallets_are_shadow_only_and_v1_history_is_preserved(
                 settings["service_buckets"][0],
                 {
                     **settings["service_buckets"][1],
-                    "receiving_hotkey": "gm-receiving-hotkey",
+                    "holding_coldkey": "gm-holding-coldkey",
                 },
             ]
         },
+        {"treasury_coldkey": "gm-holding-coldkey"},
+        {"treasury_hotkey": None},
         {"gm_bps": 1},
         {"max_daily_outflow_rao": 1},
         {"mode": "active"},

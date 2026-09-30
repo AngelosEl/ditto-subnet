@@ -9,8 +9,7 @@ export const treasurySettingsSchema = z.object({
     bucket_id: z.string().regex(/^[a-z][a-z0-9_]{1,47}$/),
     purpose: z.string().min(8).max(160),
     allocation_bps: z.number().int().min(0).max(1000),
-    receiving_hotkey: z.string().nullable(),
-    receiving_coldkey: z.string().nullable(),
+    holding_coldkey: z.string().nullable(),
     service_account_ref: z.string().nullable(),
   })).max(20).default([]),
   treasury_hotkey: z.string().nullable(),
@@ -21,9 +20,11 @@ export const treasurySettingsSchema = z.object({
   max_slippage_bps: z.number().int().min(0).max(500),
 }).superRefine((value, context) => {
   if (value.allocation_version === 2) {
-    if (value.maintenance_bps || value.gm_bps || value.treasury_hotkey ||
-        value.treasury_coldkey || value.gm_account_ref) {
-      context.addIssue({ code: 'custom', message: 'v2 cannot mix with v1 allocation or wallet' })
+    if (value.maintenance_bps || value.gm_bps || value.gm_account_ref) {
+      context.addIssue({ code: 'custom', message: 'v2 cannot mix with v1 allocation or GM account' })
+    }
+    if (!!value.treasury_hotkey !== !!value.treasury_coldkey) {
+      context.addIssue({ code: 'custom', message: 'v2 collector requires both keys' })
     }
     if (value.service_buckets.length === 0) {
       context.addIssue({ code: 'custom', message: 'v2 requires service buckets' })
@@ -32,17 +33,23 @@ export const treasurySettingsSchema = z.object({
     if (new Set(ids).size !== ids.length) {
       context.addIssue({ code: 'custom', message: 'duplicate service bucket ID' })
     }
-    const wallets = value.service_buckets.flatMap(bucket =>
-      [bucket.receiving_hotkey, bucket.receiving_coldkey].filter((key): key is string => !!key))
+    const wallets = value.service_buckets.map(bucket => bucket.holding_coldkey).filter((key): key is string => !!key)
     if (new Set(wallets).size !== wallets.length) {
-      context.addIssue({ code: 'custom', message: 'service wallets must be distinct' })
+      context.addIssue({ code: 'custom', message: 'service holding coldkeys must be distinct' })
+    }
+    if (value.treasury_coldkey && wallets.includes(value.treasury_coldkey)) {
+      context.addIssue({ code: 'custom', message: 'collector coldkey cannot hold a service bucket' })
+    }
+    if (value.service_buckets.some(bucket => bucket.allocation_bps) &&
+        (!value.treasury_hotkey || !value.treasury_coldkey)) {
+      context.addIssue({ code: 'custom', message: 'nonzero service allocation requires collector keys' })
     }
     if (value.service_buckets.reduce((total, bucket) => total + bucket.allocation_bps, 0) > 1000) {
       context.addIssue({ code: 'custom', message: 'combined service allocation exceeds 1000 bps' })
     }
     for (const bucket of value.service_buckets) {
-      if (bucket.allocation_bps && (!bucket.receiving_hotkey || !bucket.receiving_coldkey)) {
-        context.addIssue({ code: 'custom', message: 'nonzero service allocation requires wallet identity' })
+      if (bucket.allocation_bps && !bucket.holding_coldkey) {
+        context.addIssue({ code: 'custom', message: 'nonzero service allocation requires holding coldkey' })
       }
       if (bucket.bucket_id === 'gm_credits' && bucket.allocation_bps && !bucket.service_account_ref) {
         context.addIssue({ code: 'custom', message: 'GM allocation requires account reference' })

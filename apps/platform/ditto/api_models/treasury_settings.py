@@ -1,8 +1,9 @@
 """Versioned, shadow-only SN118 treasury allocation proposal.
 
 Neither policy version changes validator weights or authorizes a transfer.
-Version 1 keeps its original 500 bps ceiling; version 2 describes isolated
-service wallets under a separately reviewed 1,000 bps aggregate ceiling.
+Version 1 keeps its original 500 bps ceiling; version 2 describes one
+collector and isolated service holding coldkeys under a provisional 1,000 bps
+aggregate ceiling.
 """
 
 from __future__ import annotations
@@ -22,18 +23,13 @@ class TreasuryServiceBucket(BaseModel):
     bucket_id: Annotated[str, Field(pattern=r"^[a-z][a-z0-9_]{1,47}$")]
     purpose: Annotated[str, Field(min_length=8, max_length=160)]
     allocation_bps: Annotated[int, Field(ge=0, le=MAX_SERVICE_BPS)] = 0
-    receiving_hotkey: str | None = None
-    receiving_coldkey: str | None = None
+    holding_coldkey: str | None = None
     service_account_ref: str | None = None
 
     @model_validator(mode="after")
     def validate_recipient(self) -> TreasuryServiceBucket:
-        if self.allocation_bps and (
-            not self.receiving_hotkey or not self.receiving_coldkey
-        ):
-            raise ValueError(
-                "nonzero service allocation requires receiving wallet identity"
-            )
+        if self.allocation_bps and not self.holding_coldkey:
+            raise ValueError("nonzero service allocation requires holding coldkey")
         if (
             self.bucket_id == "gm_credits"
             and self.allocation_bps
@@ -65,21 +61,28 @@ class TreasurySettings(BaseModel):
         if self.allocation_version == 2:
             if self.maintenance_bps or self.gm_bps:
                 raise ValueError("v2 service buckets cannot mix with v1 allocations")
-            if self.treasury_hotkey or self.treasury_coldkey or self.gm_account_ref:
-                raise ValueError("v2 service buckets cannot reuse the v1 wallet")
+            if self.gm_account_ref:
+                raise ValueError("v2 GM account belongs in its service bucket")
+            if bool(self.treasury_hotkey) != bool(self.treasury_coldkey):
+                raise ValueError("v2 collector requires both hotkey and coldkey")
             if not self.service_buckets:
                 raise ValueError("v2 requires at least one service bucket")
             ids = [bucket.bucket_id for bucket in self.service_buckets]
             if len(ids) != len(set(ids)):
                 raise ValueError("duplicate service bucket ID")
             wallets = [
-                key
+                bucket.holding_coldkey
                 for bucket in self.service_buckets
-                for key in (bucket.receiving_hotkey, bucket.receiving_coldkey)
-                if key
+                if bucket.holding_coldkey
             ]
             if len(wallets) != len(set(wallets)):
-                raise ValueError("service buckets must have distinct wallet identities")
+                raise ValueError("service buckets must have distinct holding coldkeys")
+            if self.treasury_coldkey in wallets:
+                raise ValueError("collector coldkey cannot hold a service bucket")
+            if any(bucket.allocation_bps for bucket in self.service_buckets) and (
+                not self.treasury_hotkey or not self.treasury_coldkey
+            ):
+                raise ValueError("nonzero service allocation requires collector keys")
             if (
                 sum(bucket.allocation_bps for bucket in self.service_buckets)
                 > MAX_SERVICE_BPS

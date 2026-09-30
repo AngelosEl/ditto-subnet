@@ -40,11 +40,10 @@ revisioned policy. No service bucket may borrow another bucket's allocation.
 
 ## Wallet identity and custody
 
-**Recommend one collector hotkey with three holding coldkeys, subject to custody
-review before the active weight path is built.** The current shadow schema
-instead models one registered hotkey per service wallet. The collector design
-uses one registered hotkey and three separately controlled
-holding coldkeys. Validators would route only the reviewed aggregate service
+**Use one collector hotkey with three holding coldkeys, subject to custody
+review before the active weight path is built.** The v2 shadow schema records
+one collector hotkey/coldkey pair and a distinct holding coldkey for each
+service. Validators would route only the reviewed aggregate service
 share to the collector. After finality, a guarded, reconciled
 [`transfer_stake`](https://github.com/latent-to/developer-docs/blob/main/docs/navigating-subtensor/subtensor-extrinsics.md)
 could move each bucket's SN118 stake from the collector coldkey to its holding
@@ -54,11 +53,11 @@ registration slots. It introduces a collector custody window and requires
 exactly-once sweep accounting, independent signer review, and a tested rollback.
 Holding SN118 stake is not the same as a spendable TAO balance; a provider
 payment would need a separate reviewed conversion and transfer.
-It is preferable because the validator has one bounded treasury recipient and
-service wallets do not occupy separate miner registration slots. The current
-shadow schema describes the direct-recipient option only; it must be revised
-for the recommended custody model or explicitly approved before any validator
-implementation.
+This keeps the validator to one bounded treasury recipient and prevents
+service wallets from occupying separate miner registration slots. The
+alternative of one registered hotkey per service would remove the sweep step,
+but adds validator recipients, registration slots, and independent signer
+surfaces. Do not switch to that alternative without a separate review.
 
 Under the recommended design, each purpose gets a dedicated, publicly
 identified holding coldkey:
@@ -144,15 +143,15 @@ its own authenticated instructions and reconciliation proof exist.
    reject every nonzero recipient until registration and ownership are verified
    on a finalized block. Hosted CI and an independent exact-head review are
    required before merge.
-3. Choose direct recipients or one collector plus holding coldkeys. Review and
-   register only the chosen keys through a protected ceremony, after an exact
-   infrastructure plan and explicit action-time approval. Verify finalized
+3. Review and register the collector and holding coldkeys through a protected
+   ceremony, after an exact infrastructure plan and explicit action-time
+   approval. Verify finalized
    ownership, signer isolation, recovery and public read-only visibility. Do
    not activate #2327 merely because its Terraform is valid.
 4. Ship a validator implementation behind a default-off flag. Rehearse zero
-   allocation, small shadow forecasts, rounding and every chosen recipient
-   failure path across every serving validator version. If using a collector,
-   rehearse the separate finalized-stake sweep and per-bucket reconciliation.
+   allocation, small shadow forecasts, rounding and every recipient failure
+   path across every serving validator version. Rehearse the separate
+   finalized-stake sweep and per-bucket reconciliation.
    Publish expected versus actual finalized receipts before positive routing.
 5. Keep the burn setting and screening/scoring recovery independent. Activate
    one small, time-bounded service allocation with an immediate zero rollback,
