@@ -2,6 +2,25 @@
 
 <!-- version list -->
 
+## v0.332.0 (2026-09-30)
+
+### Bug Fixes
+
+- Bound miner screening review outcome without provisional clear
+  ([#2597](https://github.com/ditto-assistant/ditto-subnet/pull/2597),
+  [`9035d61`](https://github.com/ditto-assistant/ditto-subnet/commit/9035d61b4624d20e5768ad8cb9af3582744edc46))
+
+- **screener**: Stage current starter provenance for release gate
+  ([#2601](https://github.com/ditto-assistant/ditto-subnet/pull/2601),
+  [`364dc99`](https://github.com/ditto-assistant/ditto-subnet/commit/364dc99a7aee4ecc0ce75ce432023410494c732a))
+
+### Features
+
+- **dittobench**: Add v14 action-scoped declarative scoring
+  ([#2540](https://github.com/ditto-assistant/ditto-subnet/pull/2540),
+  [`17c01a6`](https://github.com/ditto-assistant/ditto-subnet/commit/17c01a658cdd4ad3a9f2a2d6615cdf0223f56348))
+
+
 ## v0.331.5 (2026-09-30)
 
 ### Bug Fixes
