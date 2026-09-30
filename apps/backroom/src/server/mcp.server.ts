@@ -877,7 +877,7 @@ const MCP_CATALOG_DESCRIPTIONS: Record<string, string> = {
   get_emission_eligibility_policy:
     'Read the terminal-review emission gate: posture (off/shadow/enforce), what the fleet is actually folding, stored or default revision, emission windows, and the shadow withheld count. Opt-in history.',
   get_agent_emission_eligibility:
-    'Explain one exact agent UUID. reward_eligible means earning under the current off/shadow/enforce posture; posture_satisfied is what enforcement would decide. A clear can wait until activates_at. The response pins the artifact digest, benchmark and posture revisions, ATH review status/resolution/kind, screening reason, and rehearsal history. in_ledger=false after terminal review may instead mean agent status, score floor or rollout pin is holding it out. The read grants nothing and resolves nothing.',
+    'Explain one exact agent UUID: whether it is earning, the withheld class and reason, when a clear starts earning, and whether the validator fold sees it.',
   get_submission_cooldown:
     'Read the current miner submission fee and owner-coldkey cooldown. Revision history is newest-first and opt-in; historyLimit defaults to 0.',
   list_hotkey_bans: 'Hotkey bans.',
@@ -3362,7 +3362,7 @@ export function createBackroomMcpServer(props: McpGrantProps) {
     'get_treasury_settings',
     {
       title: 'Get SN118 treasury shadow policy',
-      description: 'Read versioned shadow treasury buckets, wallet proposals and history. v1 cap: 500 bps; v2 cap: 1000 bps. No weights or funds move. Requires backroom:read.',
+      description: 'Read shadow treasury buckets and history. No weights or funds move.',
       annotations: toolAnnotations('read'),
     },
     async () => result(await fetchTreasurySettings()),
@@ -3372,7 +3372,7 @@ export function createBackroomMcpServer(props: McpGrantProps) {
     'record_treasury_settings',
     {
       title: 'Record SN118 treasury shadow policy',
-      description: 'Append a shadow policy revision with expectedRevision and exact confirmation. v1 cap: 500 bps; v2 cap: 1000 bps across distinct wallets. No weights or funds move. Requires backroom:write.',
+      description: 'Record a shadow treasury revision with CAS and confirmation. No weights or funds move.',
       inputSchema: recordTreasurySettingsInputSchema,
       annotations: toolAnnotations('write', true),
     },
@@ -3383,7 +3383,7 @@ export function createBackroomMcpServer(props: McpGrantProps) {
     'quote_treasury_topup',
     {
       title: 'Quote both GM credit funding routes',
-      description: 'Quote finalized SN118-to-TAO and SN118-to-SN28-alpha GM routes with price impact. No USD credit estimate or execution. Requires backroom:read.',
+      description: 'Quote finalized GM funding routes and price impact. No execution.',
       inputSchema: treasuryQuoteInputSchema,
       annotations: toolAnnotations('read'),
     },
@@ -3394,7 +3394,7 @@ export function createBackroomMcpServer(props: McpGrantProps) {
     'preview_treasury_topup',
     {
       title: 'Dry run one GM top-up route',
-      description: 'Dry-run a GM route against shadow allocation and limits. Wallet link, GM instructions and daily spend remain unverified; execution disabled. Requires backroom:read.',
+      description: 'Dry-run a GM route against shadow limits. Execution disabled.',
       inputSchema: treasuryPreviewInputSchema,
       annotations: toolAnnotations('read'),
     },
