@@ -1034,6 +1034,86 @@ def test_empty_manifest_override_trusts_nothing_in_preflight(
     assert scanned == [[], [path]]
 
 
+def _broken_manifest(tmp_path: Path, kind: str) -> str:
+    if kind == "missing":
+        return str(tmp_path / "missing-manifest.json")
+    broken = tmp_path / "broken-manifest.json"
+    broken.write_text("{not json")
+    return str(broken)
+
+
+@pytest.mark.parametrize("level", ["repository", "call"])
+@pytest.mark.parametrize("kind", ["missing", "invalid-json"])
+def test_unreadable_manifest_set_trusts_nothing_in_review_leads(
+    tmp_path: Path, level: str, kind: str
+) -> None:
+    path, raw = _runtime_pinned_kit_source()
+    archive = str(
+        _archive_files(tmp_path, {path: raw, _STARTER_MODEL: _stock_starter_model()})
+    )
+    # A readable runtime manifest pins the file; the broken one sits beside it.
+    manifests = (*_STARTER_MANIFESTS, _broken_manifest(tmp_path, kind))
+
+    leads = (
+        TarSourceRepository(archive, provenance_manifest_paths=manifests).review_leads()
+        if level == "repository"
+        else TarSourceRepository(archive).review_leads(manifests)
+    )
+
+    # Lead generation continues and the whole set grants nothing, as the
+    # starter-model accounting already did: nothing is skipped as starter code.
+    assert leads["trusted_starter_skipped"] == 0
+    assert leads["files_scanned"] == 1
+    assert leads["truncated"] is True
+    assert leads["nontext"] == []
+
+
+@pytest.mark.parametrize("level", ["repository", "call"])
+@pytest.mark.parametrize("kind", ["missing", "invalid-json"])
+def test_unreadable_manifest_set_trusts_nothing_in_preflight(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, level: str, kind: str
+) -> None:
+    path, raw = _runtime_pinned_kit_source()
+    scanned: list[list[str]] = []
+
+    def recording_detector(
+        readable: list[tuple[str, str]], **kwargs: object
+    ) -> list[dict[str, object]]:
+        scanned.append([name for name, _text in readable])
+        return find_decisive_malicious_source(readable, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(
+        source_review_module, "find_decisive_malicious_source", recording_detector
+    )
+    archive = str(_archive_files(tmp_path, {path: raw}))
+    manifests = (*_STARTER_MANIFESTS, _broken_manifest(tmp_path, kind))
+
+    if level == "repository":
+        TarSourceRepository(
+            archive, provenance_manifest_paths=manifests
+        ).malicious_preflight(artifact_sha256="a" * 64)
+    else:
+        TarSourceRepository(archive).malicious_preflight(
+            artifact_sha256="a" * 64, provenance_manifest_paths=manifests
+        )
+
+    # The pinned runtime file is scanned as the miner's, not trusted.
+    assert scanned == [[path]]
+
+
+@pytest.mark.parametrize("kind", ["missing", "invalid-json"])
+def test_unreadable_manifest_still_fails_the_l1_provenance_block(
+    tmp_path: Path, kind: str
+) -> None:
+    archive = str(_archive_files(tmp_path, {"src/main.rs": b"fn main() {}\n"}))
+    broken = _broken_manifest(tmp_path, kind)
+
+    # The exact-file provenance report never claims a result from a broken
+    # manifest; L1 maps this to its retryable provenance failure.
+    with pytest.raises((OSError, ValueError)):
+        TarSourceRepository(archive).closest_trusted_provenance((broken,))
+
+
 @pytest.mark.parametrize("shadow", ["special", "hardlink", "symlink"])
 def test_review_leads_hash_only_the_admitted_starter_model_member(
     tmp_path: Path, shadow: str
