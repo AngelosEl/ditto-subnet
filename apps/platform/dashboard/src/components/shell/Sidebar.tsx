@@ -28,16 +28,6 @@ interface NavItem {
 
 const NAV_ITEMS: NavItem[] = [
   {
-    page: "gamma",
-    label: "Gamma · Beta",
-    desc: () => "Service funding & wallet trail",
-    icon: () => (
-      <svg class="ic" viewBox="0 0 24 24">
-        <path d="M6 21V3h12M10 7h8" />
-      </svg>
-    ),
-  },
-  {
     page: "overview",
     label: "Overview",
     desc: () => "Snapshot & leaderboard",
@@ -130,6 +120,16 @@ const NAV_ITEMS: NavItem[] = [
       <svg class="ic" viewBox="0 0 24 24">
         <rect x="5" y="3" width="14" height="18" rx="2" />
         <path d="M9 8h6M9 12h6M9 16h4" />
+      </svg>
+    ),
+  },
+  {
+    page: "gamma",
+    label: "Gamma · Beta",
+    desc: () => "Service funding & wallet trail",
+    icon: () => (
+      <svg class="ic" viewBox="0 0 24 24">
+        <path d="M6 21V3h12M10 7h8" />
       </svg>
     ),
   },
