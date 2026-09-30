@@ -2494,6 +2494,7 @@ class TarSourceRepository:
         if static_preflight_v2_mode not in {"off", "shadow", "enforce"}:
             raise ValueError("static preflight mode must be off, shadow, or enforce")
         self._archive_path = archive_path
+        self._archive_identity = self._current_archive_identity()
         self._static_preflight_v2_mode = static_preflight_v2_mode
         self._provenance_manifest_paths = provenance_manifest_paths
         self._binary_analysis_cache: dict[str, dict[str, object]] = {}
@@ -3547,6 +3548,7 @@ class TarSourceRepository:
         return _bounded_json({"hits": hits, "truncated": False})
 
     def _read_text(self, path: str) -> str | None:
+        self._assert_archive_unchanged()
         member_info = self._members[path]
         if member_info.size > 2 * 1024 * 1024:
             return None
@@ -3562,9 +3564,25 @@ class TarSourceRepository:
             return None
 
     def _member_sha256(self, path: str) -> str:
+        self._assert_archive_unchanged()
         if self._member_digests is None:
             self._member_digests = self._hash_members()
+        self._assert_archive_unchanged()
         return self._member_digests[path]
+
+    def _current_archive_identity(self) -> tuple[int, int, int, int, int]:
+        stat = Path(self._archive_path).stat()
+        return (
+            stat.st_dev,
+            stat.st_ino,
+            stat.st_size,
+            stat.st_mtime_ns,
+            stat.st_ctime_ns,
+        )
+
+    def _assert_archive_unchanged(self) -> None:
+        if self._current_archive_identity() != self._archive_identity:
+            raise ValueError("source archive changed during review")
 
     def _hash_members(self) -> dict[str, str]:
         """Hash every validated member in one sequential pass over the archive.
