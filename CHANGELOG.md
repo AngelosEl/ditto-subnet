@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.331.1 (2026-09-30)
+
+### Bug Fixes
+
+- **screener**: Stage starter provenance and check drift
+  ([#2588](https://github.com/ditto-assistant/ditto-subnet/pull/2588),
+  [`8b6d202`](https://github.com/ditto-assistant/ditto-subnet/commit/8b6d20240e339aa6a61182319963d80396eb92dc))
+
+
 ## v0.331.0 (2026-09-30)
 
 ### Bug Fixes
