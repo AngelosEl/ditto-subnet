@@ -2,6 +2,19 @@
 
 <!-- version list -->
 
+## v0.331.5 (2026-09-30)
+
+### Bug Fixes
+
+- **platform**: Rebase bounded court-key retry after canary pin migration
+  ([#2599](https://github.com/ditto-assistant/ditto-subnet/pull/2599),
+  [`8cb1407`](https://github.com/ditto-assistant/ditto-subnet/commit/8cb1407a48c114e484ae14b018acf41d43799ef4))
+
+- **platform**: Reserve production workers from report canaries after pinning
+  ([#2598](https://github.com/ditto-assistant/ditto-subnet/pull/2598),
+  [`086e572`](https://github.com/ditto-assistant/ditto-subnet/commit/086e572eaa522a51cb9a353a2938b0d8e6fa46ce))
+
+
 ## v0.331.4 (2026-09-30)
 
 ### Bug Fixes
