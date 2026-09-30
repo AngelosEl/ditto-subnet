@@ -39,6 +39,7 @@ __all__ = [
     "language_for_path",
     "mask_comments",
     "mask_python_code",
+    "mask_rust_literals",
     "mask_string_literals",
 ]
 
@@ -172,6 +173,18 @@ def mask_python_code(text: str) -> str | None:
     if kinds is None:
         return None
     return _blank(_blank(text, kinds, _COMMENT), kinds, _STRING)
+
+
+def mask_rust_literals(text: str) -> str | None:
+    """Blank Rust string and char literals, or ``None`` if the source does not lex.
+
+    For callers that must not guess item boundaries in source they cannot
+    lex (``rust_test_items``), rather than seeing it unchanged.
+    """
+    if not text:
+        return text
+    kinds = _cached_kinds(text, "rust")
+    return None if kinds is None else _blank(text, kinds, _STRING)
 
 
 def _kinds_for(text: str, path: str) -> bytes | None:

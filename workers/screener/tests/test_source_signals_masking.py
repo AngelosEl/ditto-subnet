@@ -13,6 +13,7 @@ import time
 import pytest
 
 from ditto_screener.evidence_quality import citation_admissibility
+from ditto_screener.rust_test_items import test_only_item_lines as rust_test_items
 from ditto_screener.source_masking import language_for_path
 from ditto_screener.source_signals import (
     find_decisive_malicious_source,
@@ -277,6 +278,31 @@ def test_rust_char_literals_do_not_desynchronize_the_masker(literal: str) -> Non
     assert "https" not in code_only
     assert "'a str" in code_only
     assert "'outer:" in code_only
+
+
+def test_a_char_escape_cannot_stretch_a_rust_test_item_over_served_code() -> None:
+    """rustc builds this; ``serve`` is production code between two test items.
+
+    Counting the ``{`` and ``}`` char literals after a ``'\\u{...}'`` escape as
+    braces made the ``tests`` module appear to close on line 7, so the served
+    credential read was blanked as test-only before the decisive scan.
+    """
+    source = (
+        "#[cfg(test)]\n"
+        "mod tests {\n"
+        "    const A: [char; 2] = ['\\u{1F600}', '{'];\n"
+        "}\n"
+        "\n"
+        'pub fn serve() -> Vec<u8> { std::fs::read("/root/.ssh/id_rsa").unwrap() }\n'
+        "const B: [char; 2] = ['\\u{1F600}', '}'];\n"
+    )
+
+    lines = rust_test_items(mask_comments(source, "src/lib.rs").splitlines())
+
+    assert lines == frozenset({1, 2, 3, 4})
+    assert "credential_access" in {
+        finding["category"] for finding in _decisive("src/lib.rs", source)
+    }
 
 
 def test_rust_raw_strings_cannot_close_or_open_comments() -> None:
