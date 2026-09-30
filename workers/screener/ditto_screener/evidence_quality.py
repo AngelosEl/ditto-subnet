@@ -18,9 +18,9 @@ only what may be *cited as proof*, which is why it cannot be used to smuggle a
 violation: a violation that executes is, by construction, on a line that is not
 inert.
 
-The declaration, attribute, and ``#[cfg(test)]`` rules are Rust syntax and
-apply only to Rust sources; in another language the same text (``mod = os;``
-in Python, ``'#[test]'`` in a JavaScript string) is ordinary code.
+The declaration and attribute rules are Rust syntax and apply only to Rust
+sources; in another language the same text (``mod = os;`` in Python,
+``'#[test]'`` in a JavaScript string) is ordinary code.
 
 Two exemptions keep the filter from eating load-bearing evidence:
 
@@ -38,7 +38,6 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from ditto_screener.rust_test_items import test_only_item_lines
 from ditto_screener.source_masking import language_for_path
 from ditto_screener.source_signals import mask_comments
 
@@ -98,18 +97,16 @@ def citation_admissibility(
     and the line is unverifiable by design, so refusing it would invent a
     false negative.
 
-    A ``#[cfg(test)]`` item is found as the static detectors find it
-    (``rust_test_items``): brace matching over comment- and literal-masked
-    text, a braceless item ending at its ``;``, and an uncertain boundary left
-    citable. Only an attribute that affirmatively requires ``test`` counts;
-    production branches such as ``#[cfg(not(test))]`` remain citable.
+    A Rust ``#[cfg(test)]`` body remains citable because the served binary can
+    enable that cfg with ``rustc --cfg test`` without using a test harness.
+    The reviewer must still establish that the build serves the cited path.
 
     ``runtime_paths`` are members the build or served code explicitly makes
     executable (a Cargo target, ``include!``/``#[path]``, a script the
     Dockerfile runs). A ``tests/`` or ``benches/`` directory name does not make
-    such a file inert, so it is exempt from the test-path rule; the comment,
-    blank, and ``#[cfg(test)]`` checks still apply. It may be passed as a
-    callable, resolved only when a citation's path looks test-only.
+    such a file inert, so it is exempt from the test-path rule; the comment
+    and blank checks still apply. It may be passed as a callable, resolved
+    only when a citation's path looks test-only.
     """
     normalized = path.removeprefix("./")
     if _TEST_PATH.search(normalized):
@@ -129,8 +126,6 @@ def citation_admissibility(
     reason = _inert_reason(code_lines[line - 1], raw_lines[line - 1], rust=rust)
     if reason:
         return Admissibility(False, reason)
-    if rust and line in test_only_item_lines(code_lines):
-        return Admissibility(False, "cfg-test-only")
     return ADMISSIBLE
 
 

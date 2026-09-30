@@ -1928,7 +1928,12 @@ export interface paths {
         put?: never;
         /**
          * Schedule L2 Report Canary
-         * @description Queue one exact source once; this never reopens a screening attempt.
+         * @description Queue one exact source once under the claiming node's posture.
+         *
+         *     This never reopens a screening attempt. The request model refuses a
+         *     ``review_settings_revision`` key with 422: pinned canaries use
+         *     ``POST /pinned``, so a Platform build without pin support rejects the
+         *     route instead of ignoring the field.
          */
         post: operations["schedule_l2_report_canary_api_v1_admin_screener_l2_report_canaries_post"];
         delete?: never;
@@ -2011,6 +2016,32 @@ export interface paths {
          * @description Queue one source-only report; no submission or admission state changes.
          */
         post: operations["schedule_canonical_fixture_api_v1_admin_screener_l2_report_canaries_fixture__canary_id__schedule_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/screener-l2-report-canaries/pinned": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Schedule Pinned L2 Report Canary
+         * @description Queue one exact source once under a pinned ``l2-report-canary*`` posture.
+         *
+         *     The separate route is the capability check. A Platform build that predates
+         *     pins has no such route and answers 405 or 404 without queueing anything,
+         *     where the plain route would ignore the unknown field and queue the canary
+         *     under the node's posture. This route therefore never answers 404 itself:
+         *     a missing revision is a 422.
+         */
+        post: operations["schedule_pinned_l2_report_canary_api_v1_admin_screener_l2_report_canaries_pinned_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -21342,6 +21373,11 @@ export interface components {
         };
         /** L2CanaryClaimRequest */
         L2CanaryClaimRequest: {
+            /**
+             * Accepts Review Settings Override
+             * @default false
+             */
+            accepts_review_settings_override: boolean;
             /** Instance Id */
             instance_id: string;
             /** Settings Checksum */
@@ -21378,6 +21414,7 @@ export interface components {
             miner_hotkey: string;
             /** Policy Version */
             policy_version: number;
+            review_settings_override?: components["schemas"]["ScreenerReviewSettingsOverride"] | null;
             /**
              * Run Mode
              * @default source_only
@@ -21423,6 +21460,62 @@ export interface components {
             accepted: boolean;
         };
         /**
+         * L2CanaryPinnedScheduleRequest
+         * @description ``POST /pinned``: the schedule request with a required posture pin.
+         */
+        L2CanaryPinnedScheduleRequest: {
+            /**
+             * Agent Id
+             * Format: uuid
+             */
+            agent_id: string;
+            /** Artifact Sha256 */
+            artifact_sha256: string;
+            /**
+             * Confirm Report Only
+             * @constant
+             */
+            confirm_report_only: true;
+            /** Expected Agent Status */
+            expected_agent_status: string;
+            /** Expected Score Count */
+            expected_score_count: number;
+            /** Historical Ruling Id */
+            historical_ruling_id?: string | null;
+            /** Historical Ruling Kind */
+            historical_ruling_kind?: ("ath_clear" | "screening_reject") | null;
+            /**
+             * Policy Version
+             * @constant
+             */
+            policy_version: 13;
+            /**
+             * Request Id
+             * Format: uuid
+             */
+            request_id: string;
+            /**
+             * Review Label
+             * @enum {string}
+             */
+            review_label: "candidate_clear" | "known_reject";
+            /** Review Settings Revision */
+            review_settings_revision: number;
+            /**
+             * Run Mode
+             * @default source_only
+             * @enum {string}
+             */
+            run_mode: "source_only" | "full_runtime";
+            /**
+             * Source Attempt Id
+             * Format: uuid
+             */
+            source_attempt_id: string;
+            /** Target Node Id */
+            target_node_id: string;
+        };
+        /**
          * L2CanaryPreflightView
          * @description Current values of the scheduler's exact-source guards, before its recheck.
          */
@@ -21450,7 +21543,10 @@ export interface components {
              */
             source_attempt_id: string;
         };
-        /** L2CanaryScheduleRequest */
+        /**
+         * L2CanaryScheduleRequest
+         * @description The plain route: the canary runs under the claiming node's posture.
+         */
         L2CanaryScheduleRequest: {
             /**
              * Agent Id
@@ -21542,11 +21638,21 @@ export interface components {
             request_id: string;
             /** Review Label */
             review_label: string;
+            /** Review Settings Checksum */
+            review_settings_checksum?: string | null;
+            /** Review Settings Revision */
+            review_settings_revision?: number | null;
+            /** Review Settings Scope */
+            review_settings_scope?: string | null;
             /**
              * Run Mode
              * @enum {string}
              */
             run_mode: "source_only" | "full_runtime";
+            /** Settings Checksum */
+            settings_checksum?: string | null;
+            /** Settings Revision */
+            settings_revision?: number | null;
             /** Source Attempt Id */
             source_attempt_id: string | null;
             /** Source Attestation */
@@ -24823,7 +24929,7 @@ export interface components {
         };
         /**
          * PublicConfirmationScore
-         * @description One append-only shared-seed score from a continual top-five retest.
+         * @description One append-only continual retest score, without its reusable seed.
          */
         PublicConfirmationScore: {
             /**
@@ -24835,11 +24941,6 @@ export interface components {
             bench_version: number;
             /** Composite */
             composite: number;
-            /**
-             * Seed
-             * @description Exact decimal shared seed, encoded without JS rounding.
-             */
-            seed: string;
             /** Validator Hotkey */
             validator_hotkey: string;
         };
@@ -27193,6 +27294,11 @@ export interface components {
              */
             agent_id: string;
             artifact_release: components["schemas"]["PublicArtifactRelease"];
+            /**
+             * Confirmation Sample Composites
+             * @description Per-seed retest medians for this agent and active benchmark, sorted by composite without exposing reusable seed identifiers. These are display-only; cohort fold eligibility is authoritative only in the leaderboard.
+             */
+            confirmation_sample_composites?: number[];
             /** Confirmation Scores */
             confirmation_scores?: components["schemas"]["PublicConfirmationScore"][];
             dispute?: components["schemas"]["PublicScreeningDispute"] | null;
@@ -39115,6 +39221,42 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["CanonicalFixtureScheduleRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["L2CanaryView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    schedule_pinned_l2_report_canary_api_v1_admin_screener_l2_report_canaries_pinned_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "x-admin-actor"?: string | null;
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["L2CanaryPinnedScheduleRequest"];
             };
         };
         responses: {

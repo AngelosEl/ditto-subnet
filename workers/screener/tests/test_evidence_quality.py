@@ -67,7 +67,7 @@ def test_a_deref_assignment_is_not_a_comment() -> None:
     assert citation_admissibility("src/main.rs", source, 2).admissible
 
 
-def test_a_brace_inside_a_comment_cannot_open_a_test_region() -> None:
+def test_comment_brace_does_not_hide_citable_cfg_test_body() -> None:
     source = (
         "#[cfg(test)]\n"
         "mod t {\n"
@@ -76,7 +76,8 @@ def test_a_brace_inside_a_comment_cannot_open_a_test_region() -> None:
         "// a stray closing brace in prose }\n"
         "fn served(case: &str) -> String { answer_table(case) }\n"
     )
-    assert not citation_admissibility("src/main.rs", source, 3).admissible
+    assert citation_admissibility("src/main.rs", source, 3).admissible
+    assert not citation_admissibility("src/main.rs", source, 5).admissible
     # The served function sits after the region and stays citable.
     assert citation_admissibility("src/main.rs", source, 6).admissible
 
@@ -92,6 +93,18 @@ def test_cfg_not_test_body_remains_production_evidence() -> None:
 
     assert citation_admissibility("src/main.rs", source, 3).admissible
     assert citation_admissibility("src/main.rs", source, 4).admissible
+
+
+def test_cfg_test_body_can_be_served_without_a_test_harness() -> None:
+    # A Docker build can use `rustc --cfg test ...` and serve this binary.
+    source = (
+        "#[cfg(test)]\n"
+        "fn answer() -> String {\n"
+        '    "fixed".to_string()\n'
+        "}\n"
+        'fn main() { println!("{}", answer()); }\n'
+    )
+    assert citation_admissibility("src/main.rs", source, 3).admissible
 
 
 def test_test_paths_are_inadmissible() -> None:
@@ -251,9 +264,10 @@ def test_rust_only_rules_do_not_apply_to_other_languages(
     assert citation_admissibility(path, source, line).admissible
 
 
-# Served Rust that the test-item scan used to swallow: a braceless
+# Served Rust that the old test-item scan swallowed: a braceless
 # ``#[cfg(test)]`` item ends at its ``;``, and an attribute or brace inside a
-# literal is not structure.
+# literal is not structure. A ``#[cfg(test)]`` body is itself citable, since
+# ``rustc --cfg test`` can serve it.
 @pytest.mark.parametrize(
     ("source", "served", "test_only"),
     [
@@ -293,8 +307,7 @@ def test_served_rust_beside_a_test_item_stays_citable(
 ) -> None:
     assert citation_admissibility("src/lib.rs", source, served).admissible
     if test_only is not None:
-        verdict = citation_admissibility("src/lib.rs", source, test_only)
-        assert verdict.reason == "cfg-test-only"
+        assert citation_admissibility("src/lib.rs", source, test_only).admissible
 
 
 def test_runtime_paths_are_resolved_only_for_a_test_directory_citation() -> None:
