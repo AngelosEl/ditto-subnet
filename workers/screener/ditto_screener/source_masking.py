@@ -32,7 +32,7 @@ import re
 import tokenize
 import warnings
 from collections.abc import Callable, Iterator
-from functools import lru_cache
+from functools import lru_cache, partial
 
 __all__ = [
     "CHAR_LITERAL",
@@ -77,9 +77,9 @@ _LANGUAGE_BY_SUFFIX = {
     ".js": "javascript",
     ".mjs": "javascript",
     ".cjs": "javascript",
-    ".ts": "javascript",
-    ".mts": "javascript",
-    ".cts": "javascript",
+    ".ts": "typescript",
+    ".mts": "typescript",
+    ".cts": "typescript",
     ".py": "python",
     ".pyi": "python",
     ".pyw": "python",
@@ -113,10 +113,12 @@ _LANGUAGE_BY_NAME = {
 # Dockerfile, and configuration formats a quoted word is routinely the command
 # itself (``sh -c '...'``, ``"$(cat ...)"``, a ``[tool.*]`` script), so
 # blanking it would erase the effect a scanner is looking for.
-_STRING_MASKED_LANGUAGES = frozenset({"rust", "go", "c", "javascript", "python"})
+_STRING_MASKED_LANGUAGES = frozenset(
+    {"rust", "go", "c", "javascript", "typescript", "python"}
+)
 # The kernel executes a script's ``#!`` line (``env -S`` accepts a whole
 # command), so it is never masked as a comment.
-_SHEBANG_LANGUAGES = frozenset({"python", "shell", "javascript"})
+_SHEBANG_LANGUAGES = frozenset({"python", "shell", "javascript", "typescript"})
 
 
 def language_for_path(path: str) -> str | None:
@@ -430,7 +432,7 @@ def _lex_c_logical(text: str) -> bytearray | None:
 
 # --- JavaScript / TypeScript --------------------------------------------------
 
-_JS_TOKEN = re.compile(r"//|/\*|[/'\"`(){}<]")
+_JS_TOKEN = re.compile(r"//|/\*|<!--|-->|[/'\"`(){}<]")
 _JS_TEMPLATE_STOP = re.compile(r"\\[\s\S]|`|\$\{")
 _JS_REGEX_BODY = re.compile(
     r"(?:[^\\/\[\n\r\u2028\u2029]|\\[^\n\r\u2028\u2029]"
@@ -438,13 +440,13 @@ _JS_REGEX_BODY = re.compile(
 )
 # Longer than any keyword the regex rule looks for.
 _JS_MAX_WORD = 16
+# Reserved words that are always followed by an expression.
 _JS_EXPRESSION_KEYWORDS = frozenset(
     {
         "return",
         "typeof",
         "instanceof",
         "in",
-        "of",
         "new",
         "delete",
         "void",
@@ -452,30 +454,49 @@ _JS_EXPRESSION_KEYWORDS = frozenset(
         "case",
         "do",
         "else",
-        "yield",
-        "await",
+        "default",
+        "extends",
     }
 )
+# Keywords in some contexts and plain identifiers in others (``let of = 4``,
+# ``var yield``, ``var await`` in a script), so a slash after one either
+# divides or opens a regular expression.
+_JS_CONTEXTUAL_KEYWORDS = frozenset({"of", "yield", "await"})
 _JS_CONDITION_KEYWORDS = frozenset({"if", "while", "for", "with"})
+_JS_KEYWORDS = (
+    _JS_EXPRESSION_KEYWORDS | _JS_CONTEXTUAL_KEYWORDS | _JS_CONDITION_KEYWORDS
+)
 _JS_JSX_START = re.compile(r"[A-Za-z_$>]")
 
 
-def _lex_javascript(text: str) -> bytearray | None:
+def _lex_javascript(text: str, *, typescript: bool = False) -> bytearray | None:
     """JavaScript/TypeScript: strings, nested templates, regex literals.
 
     A ``/`` begins a regular expression only where an expression may start;
     the usual previous-token rule decides it, including ``)`` that closes an
-    ``if``/``while``/``for`` condition. Any construct that cannot be closed on
-    a valid program (a string or regular expression reaching a line end,
-    unbalanced brackets, a JSX-looking ``<Tag``) means the lexer cannot be
-    trusted, so the file is left unmasked.
+    ``if``/``while``/``for`` condition. Where that rule cannot decide (after
+    a ``}`` that may end a block or an object literal, a contextual keyword,
+    ``++``/``--``, a TypeScript ``!`` or ``>``), a guess would let a crafted
+    line fold real code into a regular expression, string, or comment, so the
+    file is left unmasked. So is any construct that cannot be closed on a
+    valid program (a string or regular expression reaching a line end,
+    unbalanced brackets, a JSX-looking ``<Tag``) and any HTML-like comment
+    (``<!--``, ``-->``), which a script reads as a comment and a module as
+    operators.
     """
     kinds = bytearray(len(text))
-    # Frames: "(" / "(if" for parentheses, "{" for braces, "${" for template
-    # substitutions whose closing brace resumes the template literal.
+    # Frames: "(" / "(if" for parentheses, "(?" after ``await`` (a call or a
+    # ``for await`` head), "{" for braces, "${" for template substitutions
+    # whose closing brace resumes the template literal.
     frames: list[str] = []
-    expression_start = True
+    # True where a regular expression may start, False where a slash divides,
+    # None where the preceding code does not decide.
+    expression_start: bool | None = True
     previous_word = ""
+    # Whether the code before ``index`` (comments aside) ends in a member-access
+    # dot, so a following keyword is a property name; None if it may be a
+    # number's decimal point instead.
+    after_dot: bool | None = False
     index = 0
     if text.startswith("#!"):
         # An interpreter line, not JavaScript; see ``_SHEBANG_LANGUAGES``.
@@ -487,7 +508,10 @@ def _lex_javascript(text: str) -> bytearray | None:
         start, value = token.start(), token.group()
         code = text[index:start].rstrip()
         if code:
-            expression_start, previous_word = _js_state_after(code)
+            expression_start, previous_word = _js_state_after(
+                code, after_dot, expression_start, typescript
+            )
+            after_dot = _js_member_dot(code)
         end = start + 1
         if value == "//":
             end = _line_end(text, start, _JS_LINE_BREAK)
@@ -502,8 +526,13 @@ def _lex_javascript(text: str) -> bytearray | None:
             _mark(kinds, start, end, _COMMENT)
             index = end
             continue
+        if value in {"<!--", "-->"}:
+            return None
+        after_dot = False
         word, previous_word = previous_word, ""
         if value == "/":
+            if expression_start is None:
+                return None
             if expression_start:
                 # Where an expression starts, ``/`` can only open a regular
                 # expression. One that does not close on its line means the
@@ -544,21 +573,28 @@ def _lex_javascript(text: str) -> bytearray | None:
                 frames.append("${")
                 expression_start = True
         elif value == "(":
-            frames.append("(if" if word in _JS_CONDITION_KEYWORDS else "(")
+            if word in _JS_CONDITION_KEYWORDS:
+                frames.append("(if")
+            else:
+                frames.append("(?" if word == "await" else "(")
             expression_start = True
         elif value == ")":
             if not frames or not frames[-1].startswith("("):
                 return None
-            expression_start = frames.pop() == "(if"
+            closed = frames.pop()
+            expression_start = {"(if": True, "(?": None}.get(closed, False)
         elif value == "{":
             frames.append("{")
             expression_start = True
         elif value == "}":
             if not frames or frames.pop() != "{":
                 return None
-            expression_start = True
+            # A block ends before a statement, where a slash opens a regular
+            # expression; an object literal or function expression ends an
+            # operand, where it divides.
+            expression_start = None
         elif value == "<":
-            if expression_start and _JS_JSX_START.match(text, start + 1):
+            if expression_start is not False and _JS_JSX_START.match(text, start + 1):
                 return None
             expression_start = True
         index = end
@@ -574,25 +610,71 @@ def _js_template_stop(text: str, start: int) -> int | None:
     return None
 
 
-def _js_state_after(code: str) -> tuple[bool, str]:
-    """Return (a regex may start next, trailing identifier) after ``code``."""
-    if not _js_word_char(code[-1]):
-        # ``]`` and a postfix ``++``/``--`` end an operand; other punctuation
-        # expects one.
-        return code[-1] != "]" and not code.endswith(("++", "--")), ""
+def _js_state_after(
+    code: str, after_dot: bool | None, previous: bool | None, typescript: bool
+) -> tuple[bool | None, str]:
+    """Return (a regex may start next, trailing identifier) after ``code``.
+
+    ``after_dot`` and ``previous`` describe what preceded ``code``: whether it
+    ended in a member dot, and whether an expression could start there.
+    """
+    last = code[-1]
+    if not _js_word_char(last):
+        if last == "]":
+            return False, ""
+        if last in "+-":
+            # ``+``/``-`` expect an operand. ``++``/``--`` end one as postfix
+            # operators but start one as prefix operators after a line break.
+            run = len(code) - len(code.rstrip(last))
+            return (True if run == 1 else None), ""
+        if typescript and last == ">" and not code.endswith("=>"):
+            # ``f<T> / x`` divides an instantiation expression.
+            return None, ""
+        if typescript and last == "!":
+            return _ts_state_after_bang(code, after_dot, previous), ""
+        return True, ""
     start = len(code) - 1
     while start > 0 and _js_word_char(code[start - 1]):
         start -= 1
         if len(code) - start > _JS_MAX_WORD:
             return False, ""
-    before = start - 1
-    while before >= 0 and code[before] in " \t" and start - before <= _JS_MAX_WORD:
-        before -= 1
-    if before >= 0 and code[before] == ".":
+    name = code[start:]
+    if name not in _JS_KEYWORDS:
+        return False, name
+    if start and code[start - 1] == "#":
+        # A private name (``this.#return``) is an operand.
+        return False, ""
+    before = code[:start]
+    member = _js_member_dot(before) if before.strip() else after_dot
+    if member is None:
+        return None, ""
+    if member:
         # A property named like a keyword (``obj.return``) is an operand.
         return False, ""
-    name = code[start:]
+    if name in _JS_CONTEXTUAL_KEYWORDS:
+        return None, name
     return name in _JS_EXPRESSION_KEYWORDS, name
+
+
+def _ts_state_after_bang(
+    code: str, after_dot: bool | None, previous: bool | None
+) -> bool | None:
+    """TypeScript ``!`` is a prefix (``!/x/``) or a non-null postfix (``x!``)."""
+    before = code.rstrip("!").rstrip()
+    if not before:
+        return True if previous is True else None
+    if not (_js_word_char(before[-1]) or before[-1] == "]"):
+        return True
+    state, _ = _js_state_after(before, after_dot, previous, True)
+    return True if state is True else None
+
+
+def _js_member_dot(code: str) -> bool | None:
+    """Whether ``code`` ends in a member-access dot (None: maybe a number's)."""
+    code = code.rstrip()
+    if not code.endswith(".") or code.endswith("..."):
+        return False
+    return None if len(code) > 1 and code[-2].isdigit() else True
 
 
 def _js_word_char(char: str) -> bool:
@@ -1212,6 +1294,7 @@ _LEXERS: dict[str, Callable[[str], bytearray | None]] = {
     "go": _lex_go,
     "c": _lex_c,
     "javascript": _lex_javascript,
+    "typescript": partial(_lex_javascript, typescript=True),
     "python": _lex_python,
     "shell": _lex_shell,
     "dockerfile": _lex_dockerfile,

@@ -12,6 +12,7 @@ import time
 
 import pytest
 
+from ditto_screener.evidence_quality import citation_admissibility
 from ditto_screener.source_masking import language_for_path
 from ditto_screener.source_signals import (
     find_decisive_malicious_source,
@@ -306,6 +307,131 @@ def test_javascript_regex_after_a_condition_is_not_a_comment() -> None:
     source = "if (ready) /[/*]/.test(input);\nrun();\nconst half = total / 2; // c\n"
 
     assert mask_comments(source, "src/server.js") == _blank(source, "// c")
+
+
+# Each program is valid JavaScript or TypeScript that Node runs, and each one
+# calls hidden(). Where a slash could divide or open a regular expression and
+# the preceding token does not decide which, a guess lets a crafted line fold
+# that call into a comment or string. Such a file is left unmasked.
+_AMBIGUOUS_SLASHES = [
+    pytest.param(
+        "src/a.js",
+        'x = {a: 1} / 2; y = "/ //"; hidden();\n',
+        id="object-literal-division",
+    ),
+    pytest.param(
+        "src/a.js",
+        'x = function () {} / 2; y = "/ //"; hidden();\n',
+        id="function-expression-division",
+    ),
+    pytest.param(
+        "src/a.js",
+        'let of = 4; x = of / 2; y = "/ //"; hidden();\n',
+        id="of-identifier",
+    ),
+    pytest.param(
+        "src/a.js",
+        'var yield = 4; x = yield / 2; y = "/ //"; hidden();\n',
+        id="yield-identifier",
+    ),
+    pytest.param(
+        "src/a.js",
+        'var await = 4; x = await / 2; y = "/ //"; hidden();\n',
+        id="await-identifier",
+    ),
+    pytest.param(
+        "src/a.js",
+        'x = obj.\nif(1) / 2; y = "/ //"; hidden();\n',
+        id="keyword-property-after-a-line-break",
+    ),
+    pytest.param(
+        "src/a.js",
+        'x = obj./**/if(1) / 2; y = "/ //"; hidden();\n',
+        id="keyword-property-after-a-comment",
+    ),
+    pytest.param(
+        "src/a.js",
+        "x = obj." + " " * 20 + 'return / 2; y = "/ //"; hidden();\n',
+        id="keyword-property-after-blanks",
+    ),
+    pytest.param(
+        "src/a.js",
+        "class A {\n  #return = 4;\n"
+        '  m() { let x = this.#return / 2, y = "/ /*"; hidden(); x = "*/"; // "\n'
+        "  }\n}\nnew A().m();\n",
+        id="keyword-private-name",
+    ),
+    pytest.param(
+        "src/a.js",
+        "x = a+++/'/.source + hidden() + a+++/'/.source;\n",
+        id="postfix-increment-then-plus",
+    ),
+    pytest.param(
+        "src/a.mjs",
+        "for await (const v of g()) /'/.test(v) || hidden() || /'/.test(v);\n",
+        id="for-await-body",
+    ),
+    pytest.param(
+        "src/a.mjs",
+        "export default /'/.source + hidden() + /'/.source;\n",
+        id="export-default",
+    ),
+    pytest.param(
+        "src/a.ts",
+        'const n = total! / 2; const s = "/ //"; hidden();\n',
+        id="typescript-non-null",
+    ),
+    pytest.param(
+        "src/a.ts",
+        'const g = f<string> / 2; const s = "/ //"; hidden();\n',
+        id="typescript-instantiation",
+    ),
+    pytest.param("src/a.js", "x = 1; <!-- /*\nhidden();\n// */\n", id="html-open"),
+    pytest.param("src/a.js", "x = 1\n--> /*\nhidden();\n// */\n", id="html-close"),
+]
+
+
+@pytest.mark.parametrize(("path", "source"), _AMBIGUOUS_SLASHES)
+def test_an_undecidable_javascript_slash_never_hides_code(
+    path: str, source: str
+) -> None:
+    comment_masked = mask_comments(source, path)
+
+    assert "hidden()" in comment_masked
+    assert "hidden()" in mask_string_literals(comment_masked, path)
+
+
+@pytest.mark.parametrize(
+    ("path", "source"),
+    [
+        ("src/a.js", "function f() {\n  return /x\\/*/.test(s) // c\n}\n"),
+        ("src/a.js", "x = obj.if(1) / 2; y = '/'; // c\n"),
+        ("src/a.js", "x = arr\n  .with(0, 1) / 2; y = '/'; // c\n"),
+        ("src/a.js", "x = a++ + b; y = /'/.test(s); // c\n"),
+        ("src/a.js", "x = {a: 1}\n// c\n"),
+        ("src/a.ts", "if (!/'/.test(s)) run(); // c\n"),
+        ("src/a.ts", "const f = (): RegExp => /'/; // c\n"),
+        ("src/a.ts", "const n = total!; const h = n / 2; // c\n"),
+    ],
+)
+def test_decidable_javascript_slashes_keep_their_masking(
+    path: str, source: str
+) -> None:
+    assert mask_comments(source, path) == _blank(source, "// c")
+
+
+def test_object_literal_division_cannot_hide_a_served_credential_read() -> None:
+    source = (
+        'const fs = require("fs");\n'
+        'const cfg = {a: 1} / 2; const sep = "/ /*";\n'
+        'const key = fs.readFileSync(process.env.HOME + "/.ssh/id_rsa");\n'
+        'const note = "*/"; // "\n'
+    )
+
+    findings = _decisive("src/server.js", source)
+
+    assert "credential_access" in {finding["category"] for finding in findings}
+    assert citation_admissibility("src/server.js", source, 3).admissible
 
 
 @pytest.mark.parametrize(
