@@ -113,3 +113,71 @@ async def test_requires_admin(
 ) -> None:
     _install(app, session_maker)
     assert (await client.get(_URL)).status_code in {401, 403}
+
+
+async def test_v2_service_wallets_are_shadow_only_and_v1_history_is_preserved(
+    app: FastAPI,
+    client: httpx.AsyncClient,
+    session_maker: async_sessionmaker[AsyncSession],
+) -> None:
+    _install(app, session_maker)
+    legacy = await client.post(_URL, headers=_HEADERS, json=_payload())
+    assert legacy.status_code == 200, legacy.text
+
+    settings = {
+        "allocation_version": 2,
+        "service_buckets": [
+            {
+                "bucket_id": "gm_credits",
+                "purpose": "GM inference credit",
+                "allocation_bps": 1000,
+                "receiving_hotkey": "gm-receiving-hotkey",
+                "receiving_coldkey": "gm-receiving-coldkey",
+                "service_account_ref": "reviewed-gm-account",
+            },
+            {
+                "bucket_id": "bitsec_audits",
+                "purpose": "independent security audits",
+                "allocation_bps": 0,
+            },
+            {
+                "bucket_id": "bitcast_ads",
+                "purpose": "advertising campaigns",
+                "allocation_bps": 0,
+            },
+        ],
+    }
+    proposal = {
+        "expected_revision": 1,
+        "settings": settings,
+        "reason": "propose separate service wallets",
+        "confirmation": "RECORD TREASURY SHADOW POLICY",
+    }
+    created = await client.post(_URL, headers=_HEADERS, json=proposal)
+    assert created.status_code == 200, created.text
+    current = (await client.get(_URL, headers=_HEADERS)).json()
+    assert current["miner_bps"] == 9000
+    assert current["weight_effect"] == "none"
+    assert current["effective"]["service_buckets"][0]["bucket_id"] == "gm_credits"
+    assert current["history"][1]["settings"]["allocation_version"] == 1
+    assert current["history"][1]["settings"]["gm_bps"] == 50
+
+    invalid = [
+        {"service_buckets": [settings["service_buckets"][0]] * 2},
+        {"service_buckets": [settings["service_buckets"][0], {
+            **settings["service_buckets"][1], "allocation_bps": 1,
+        }]},
+        {"service_buckets": [settings["service_buckets"][0], {
+            **settings["service_buckets"][1], "receiving_hotkey": "gm-receiving-hotkey",
+        }]},
+        {"gm_bps": 1},
+        {"max_daily_outflow_rao": 1},
+        {"mode": "active"},
+    ]
+    for change in invalid:
+        response = await client.post(
+            _URL,
+            headers=_HEADERS,
+            json={**proposal, "expected_revision": 2, "settings": {**settings, **change}},
+        )
+        assert response.status_code == 422, (change, response.text)

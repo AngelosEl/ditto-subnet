@@ -3362,7 +3362,7 @@ export function createBackroomMcpServer(props: McpGrantProps) {
     'get_treasury_settings',
     {
       title: 'Get SN118 treasury shadow policy',
-      description: 'Read separate maintenance-bounty and GM inference-credit allocation proposals, destinations, bounds, revision history, and the explicit none weight effect. This is shadow-only and changes neither weights nor funds. Requires backroom:read.',
+      description: 'Read versioned service-wallet allocation proposals, destinations, bounds, revision history, and the explicit none weight effect. Legacy v1 has a 500 bps combined cap; v2 has a 1000 bps combined cap. This is shadow-only and changes neither weights nor funds. Requires backroom:read.',
       annotations: toolAnnotations('read'),
     },
     async () => result(await fetchTreasurySettings()),
@@ -3372,7 +3372,7 @@ export function createBackroomMcpServer(props: McpGrantProps) {
     'record_treasury_settings',
     {
       title: 'Record SN118 treasury shadow policy',
-      description: 'Append a reviewed shadow allocation revision with expectedRevision, reason, and exact confirmation RECORD TREASURY SHADOW POLICY. Combined proposed share is at most 500 basis points. This records policy only; it cannot change validator weights or send funds. Requires backroom:write.',
+      description: 'Append a reviewed shadow allocation revision with expectedRevision, reason, and exact confirmation RECORD TREASURY SHADOW POLICY. Legacy v1 is capped at 500 bps combined; v2 service buckets are capped at 1000 bps combined with distinct receiving wallets. This records policy only; it cannot change validator weights or send funds. Requires backroom:write.',
       inputSchema: recordTreasurySettingsInputSchema,
       annotations: toolAnnotations('write', true),
     },

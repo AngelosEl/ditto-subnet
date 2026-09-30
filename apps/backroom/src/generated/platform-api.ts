@@ -32676,8 +32676,28 @@ export interface components {
             /** Revision */
             revision: number;
         };
+        /** TreasuryServiceBucket */
+        TreasuryServiceBucket: {
+            /** Allocation Bps */
+            allocation_bps: number;
+            /** Bucket Id */
+            bucket_id: string;
+            /** Purpose */
+            purpose: string;
+            /** Receiving Coldkey */
+            receiving_coldkey?: string | null;
+            /** Receiving Hotkey */
+            receiving_hotkey?: string | null;
+            /** Service Account Ref */
+            service_account_ref?: string | null;
+        };
         /** TreasurySettings */
         TreasurySettings: {
+            /**
+             * Allocation Version
+             * @default 1
+             */
+            allocation_version: 1 | 2;
             /** Gm Account Ref */
             gm_account_ref?: string | null;
             /**
@@ -32711,6 +32731,8 @@ export interface components {
              * @constant
              */
             mode: "shadow";
+            /** Service Buckets */
+            service_buckets: components["schemas"]["TreasuryServiceBucket"][];
             /** Treasury Coldkey */
             treasury_coldkey?: string | null;
             /** Treasury Hotkey */

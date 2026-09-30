@@ -1,0 +1,113 @@
+# SN118 service treasury v2: three separately held wallets
+
+Status: **design for review; no production allocation, wallet, or payment is authorized**.
+The existing v1 policy is shadow only, has two fixed fields and a 500 bps cap.
+This proposal supersedes its 25 bps GM / 25 bps maintenance example. It does
+not reinterpret any stored v1 revision or turn the current signer prototype on.
+
+## Economic contract
+
+Use basis points of the **released miner vector**, after the separately governed
+burn decision. For a released fraction `R = 1 - burn_share`, service bucket
+`i` receives `R * bucket_bps[i] / 10_000` of the miner vector. The remainder
+of `R` goes to eligible miners. An empty eligible vector still follows the
+existing burn fallback; it is never swept into a service wallet. At today's
+`burn_share=1`, every service bucket receives zero, regardless of its shadow
+target. Scoring recovery, screening admission, treasury allocation and burn
+changes are independent decisions.
+
+The requested initial target is **1,000 bps for GM credits**. Bitsec audit and
+Bitcast advertising buckets start at zero until their shares, budgets and
+owners are explicitly reviewed. The open economic decision is whether 1,000
+bps caps all service buckets together or applies to GM alone. The active
+validator path must not be implemented or enabled until this is settled in a
+revisioned policy. No service bucket may borrow another bucket's allocation.
+
+## Wallet identity and custody
+
+Each purpose gets its own dedicated, publicly identified receiving wallet:
+
+| Bucket | Purpose | Initial bps | Receiving wallet | Spend destination |
+| --- | --- | ---: | --- | --- |
+| `gm_credits` | GM inference credit | 1,000 proposed | new dedicated SN118 hotkey and coldkey | current GM Billing instructions |
+| `bitsec_audits` | independent security audits | 0 | separate new hotkey and coldkey | approved Bitsec invoice |
+| `bitcast_ads` | advertising campaigns | 0 | separate new hotkey and coldkey | approved Bitcast campaign invoice |
+
+Each receiving hotkey must be registered on SN118 and independently verified
+as owned by its reviewed coldkey, distinct from the subnet owner's burn hotkey
+and the other service hotkeys. A wallet label or an SS58 address alone does
+not prove custody. The private signing keys must have separate access scopes;
+the Platform and Backroom retain no signing authority. The current single-key
+signer is unsuitable for this multi-wallet policy without an explicit custody
+and recovery review. The draft host-activation PR #2327 must stay dormant.
+
+The existing personal wallet
+`5Ecr5EGwvg2Xue2MdeJeCVSMLYWYuGcFb7y41eo7rQy3mGDN` is historical
+payment evidence, **not** the proposed treasury custody wallet. Taostats shows
+[3.073733948 TAO on September 27](https://taostats.io/extrinsic/9161565-0011)
+and [3.270986440 TAO on September 28](https://taostats.io/extrinsic/9167610-0004)
+sent from it to the same `5FqbWhtCvoSD3X3iNxyWXogrKGmeVLnjZXoNWPx16yErYQd9`
+address. [GM's own buybacks page](https://saygm.com/buybacks) identifies that
+address as its treasury. These transfers align in date and approximate value
+with the user's two $1,000 GM `X402-Relayed` top-up rows. That is strong
+provider attribution, but the chain receipts still do not identify the GM
+account credited or prove the exact billing-row match. Correlate exact GM
+billing deposit references and conversion times before using them as an
+automated payment template. The public treasury address is not necessarily
+the currently instructed direct-deposit address for a new payment.
+
+## Allocation, settlement and publication
+
+1. A versioned policy lists stable bucket IDs, bps, registered receiving
+   hotkeys, coldkeys, purpose, spending cap, and an independently approved
+   revision. Unknown bucket IDs or missing wallet identity make a nonzero
+   proposal invalid. A v1 revision remains subject to its original 500 bps
+   cap; it is never upgraded by interpretation.
+2. Validators must pin the exact policy revision and independently verify each
+   recipient's registration and ownership before constructing weights. All
+   serving validators must agree on recipients, rounding and the burn fallback.
+   Any missing/stale recipient or policy discrepancy fails closed to the
+   already reviewed miner/burn path, never to an arbitrary wallet.
+3. Finalized chain receipts, validator weight telemetry, actual stake ownership
+   and per-bucket balance form the source of spendable funds. A shadow quote or
+   expected emissions cannot authorize spending. Every conversion, transfer,
+   invoice and provider credit belongs to exactly one bucket and one immutable
+   policy revision in a public receipt feed without leaking secrets.
+4. GM's documented Billing flow currently requires the account owner to link
+   the exact sender wallet and obtain **current** payment instructions. Its
+   documented API exposes credit-balance reads, not a purchase endpoint. The
+   existing daily timer may request a top-up, but unattended signing remains
+   disabled until a documented, authenticated payment contract and reliable
+   account-level reconciliation are demonstrated. An `X402-Relayed` row by
+   itself does not establish that contract. Bitsec and Bitcast require their
+   own reviewed invoices, payees, spending approvals and reconciliation rules.
+
+## Activation sequence
+
+1. Settle the total-cap and denominator decisions publicly; review miner
+   economics, custody, recipient identity and wallet recovery. Keep the
+   policy shadow-only and all three bps zero in production while doing so.
+2. Land backwards-compatible shadow-policy and read-only chain/receipt code.
+   Prove the old 500 bps revisions retain their meaning and the new policy
+   rejects duplicate buckets, repeated wallets and overflow. A shadow wallet
+   string is a proposal, never proof of custody; the active weight path must
+   reject every nonzero recipient until registration and ownership are verified
+   on a finalized block. Hosted CI and an independent exact-head review are
+   required before merge.
+3. Review and register separate keys and hotkeys through a protected ceremony,
+   after an exact infrastructure plan and explicit action-time approval.
+   Verify finalized ownership, signer isolation, recovery and read-only public
+   visibility. Do not activate #2327 merely because its Terraform is valid.
+4. Ship a validator implementation behind a default-off flag. Rehearse zero
+   allocation, small shadow forecasts, multiple recipients, rounding and all
+   failure paths across every serving validator version. Publish expected
+   versus actual finalized receipts before any positive weight routing.
+5. Coordinate a separate burn/release decision with screening and scoring
+   recovery. Activate one small, time-bounded allocation with an immediate
+   zero rollback, audit finalized funds and public receipts, then increase only
+   through a new reviewed revision. No automatic service payment is implied by
+   receipt of emissions.
+
+No part of this design opens screening admission, changes GCE capacity,
+adjusts live weights/burn, provisions a secret, registers a wallet, or pays a
+provider.

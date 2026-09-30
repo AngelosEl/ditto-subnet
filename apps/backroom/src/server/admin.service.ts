@@ -15,7 +15,9 @@ export async function previewTreasuryTopup(rawInput: unknown) {
     quote,
     policy_revision: policy.revision,
     checks: {
-      gm_allocation_proposed: proposed.gm_bps > 0,
+      gm_allocation_proposed: proposed.allocation_version === 2
+        ? proposed.service_buckets.some(bucket => bucket.bucket_id === 'gm_credits' && bucket.allocation_bps > 0)
+        : proposed.gm_bps > 0,
       single_topup_within_limit: quote.tao_path.amount_rao <= proposed.max_single_topup_rao,
       price_impact_within_limit: quoteImpact <= proposed.max_slippage_bps,
       linked_wallet_verified: false,
