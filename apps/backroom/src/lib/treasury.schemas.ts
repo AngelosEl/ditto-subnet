@@ -13,9 +13,9 @@ export const treasurySettingsSchema = z
         z.object({
           bucket_id: z.string().regex(/^[a-z][a-z0-9_]{1,47}$/),
           purpose: z.string().min(8).max(160),
-          allocation_bps: z.number().int().min(0).max(1000),
-          holding_coldkey: z.string().nullable(),
-          service_account_ref: z.string().nullable(),
+          allocation_bps: z.number().int().min(0).max(1000).default(0),
+          holding_coldkey: z.string().nullable().default(null),
+          service_account_ref: z.string().nullable().default(null),
           publish_payments: z.boolean().default(true),
           payee_rules: z
             .array(

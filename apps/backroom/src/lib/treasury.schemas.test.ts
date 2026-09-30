@@ -137,6 +137,27 @@ describe('shadow treasury policy versions', () => {
     )
     expect(treasurySettingsSchema.safeParse({ ...v2, treasury_hotkey: null }).success).toBe(false)
   })
+
+  it('accepts platform-defaulted zero buckets but rejects empty collector identities', () => {
+    const policy = treasurySettingsSchema.parse({
+      ...v2,
+      treasury_hotkey: null,
+      treasury_coldkey: null,
+      service_buckets: [{ bucket_id: 'gm_credits', purpose: 'GM inference credits' }],
+    })
+    expect(policy.service_buckets[0]).toMatchObject({
+      allocation_bps: 0,
+      holding_coldkey: null,
+      service_account_ref: null,
+    })
+    expect(
+      treasurySettingsSchema.safeParse({
+        ...policy,
+        treasury_hotkey: '',
+        treasury_coldkey: '',
+      }).success,
+    ).toBe(false)
+  })
 })
 
 describe('treasuryRouteImpactBps', () => {

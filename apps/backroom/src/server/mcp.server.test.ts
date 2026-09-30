@@ -1133,6 +1133,15 @@ describe('Backroom MCP tools', () => {
     expect(payload.guidance).toContain('APPLY QUEUE POLICY SETTINGS')
     expect(payload.guidance).toContain('deferred_source_review')
 
+    const eligibility = readJsonResult(await client.callTool({
+      name: 'get_backroom_tool_help',
+      arguments: { tool: 'get_agent_emission_eligibility' },
+    })) as { guidance: string }
+    expect(eligibility.guidance).toContain('reward_eligible')
+    expect(eligibility.guidance).toContain('posture_satisfied')
+    expect(eligibility.guidance).toContain('in_ledger')
+    expect(eligibility.guidance).toContain('awaiting_next_window')
+
     await client.close()
     await server.close()
   })

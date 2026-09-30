@@ -876,6 +876,10 @@ const MCP_CATALOG_DESCRIPTIONS: Record<string, string> = {
     'Read the emission burn in force, the miner share it leaves, the governing revision, and how many validators are live enough to fold it. Revision history is newest-first and opt-in; historyLimit defaults to 0.',
   get_emission_eligibility_policy:
     'Read the terminal-review emission gate: posture (off/shadow/enforce), what the fleet is actually folding, stored or default revision, emission windows, and the shadow withheld count. Opt-in history.',
+  get_treasury_settings: 'Read shadow treasury buckets and history. No weights or funds move.',
+  record_treasury_settings: 'Record a shadow treasury revision with CAS and confirmation. No weights or funds move.',
+  quote_treasury_topup: 'Quote finalized GM funding routes and price impact. No execution.',
+  preview_treasury_topup: 'Dry-run a GM route against shadow limits. Execution disabled.',
   get_agent_emission_eligibility:
     'Explain one exact agent UUID: whether it is earning, the withheld class and reason, when a clear starts earning, and whether the validator fold sees it.',
   get_submission_cooldown:
@@ -3351,7 +3355,7 @@ export function createBackroomMcpServer(props: McpGrantProps) {
     {
       title: 'Explain one artifact reward eligibility',
       description:
-        'Read one exact agent UUID: current reward eligibility versus enforcement posture, terminal-review reason, artifact and policy pins, ATH review, ledger presence, and rehearsal history. Grants nothing. Requires backroom:read. Use get_backroom_tool_help for field meanings.',
+        'Read the terminal-review eligibility record for one exact agent UUID: the state (eligible, unresolved_review, review_inconclusive, review_escalated, review_infrastructure_failed, review_missing, review_rejected, or awaiting_next_window), the fixed miner-facing reason published for it, reward_eligible (whether it is earning under the CURRENT posture — true while the gate is off or in shadow even when the posture is not satisfied) versus posture_satisfied (the verdict enforcement would reach), activates_at for a clear waiting on the next window, the artifact digest, benchmark version and posture revision the verdict is bound to, the ath_reviews status/resolution/kind and screening reason code it was derived from so it joins straight back to the operator queue, in_ledger (false alongside a terminal review means something OTHER than this gate is holding the row out — agents.status, the ranked-run floor, or a rollout version pin), and this artifact rehearsal history. Grants nothing and resolves nothing. Requires backroom:read.',
       inputSchema: agentEmissionEligibilityInputSchema,
       annotations: toolAnnotations('read'),
     },
@@ -3362,7 +3366,7 @@ export function createBackroomMcpServer(props: McpGrantProps) {
     'get_treasury_settings',
     {
       title: 'Get SN118 treasury shadow policy',
-      description: 'Read shadow treasury buckets and history. No weights or funds move.',
+      description: 'Read shadow-only treasury proposals and revision history. V1 preserves separate GM/maintenance shares and the 500 bps combined limit. V2 describes one collector and configurable holding wallets under a combined 1000 bps pool, reserved before miner-remainder burn. Includes distribution interval, exact payee rules and publication controls; private billing references are available only in authenticated settings. Weight effect is none; funding, signing and payment observation are not activated. Requires backroom:read.',
       annotations: toolAnnotations('read'),
     },
     async () => result(await fetchTreasurySettings()),
@@ -3372,7 +3376,7 @@ export function createBackroomMcpServer(props: McpGrantProps) {
     'record_treasury_settings',
     {
       title: 'Record SN118 treasury shadow policy',
-      description: 'Record a shadow treasury revision with CAS and confirmation. No weights or funds move.',
+      description: 'Append a shadow treasury proposal with expectedRevision, reason and exact confirmation RECORD TREASURY SHADOW POLICY. V1 retains its 500 bps cap and released-miner-share denominator. V2 uses one collector and distinct holding wallets under a combined 1000 bps service pool reserved before burn; billing references are optional for manual purchases. Wallet/rule changes enter public admin activity, excluding private billing references. Public addresses only; never provide seeds. Recording settings cannot change weights, sign transfers or activate observation. Requires backroom:write.',
       inputSchema: recordTreasurySettingsInputSchema,
       annotations: toolAnnotations('write', true),
     },
@@ -3383,7 +3387,7 @@ export function createBackroomMcpServer(props: McpGrantProps) {
     'quote_treasury_topup',
     {
       title: 'Quote both GM credit funding routes',
-      description: 'Quote finalized GM funding routes and price impact. No execution.',
+      description: 'Read the finalized Finney SN118 and SN28 pools at one block and quote DITTO alpha to TAO versus DITTO alpha to TAO to GM alpha. Reports pool price impact but no USD credit estimate; GM sets credits when its deposit confirms. Does not sign, trade, or move funds. Requires backroom:read.',
       inputSchema: treasuryQuoteInputSchema,
       annotations: toolAnnotations('read'),
     },
@@ -3394,7 +3398,7 @@ export function createBackroomMcpServer(props: McpGrantProps) {
     'preview_treasury_topup',
     {
       title: 'Dry run one GM top-up route',
-      description: 'Dry-run a GM route against shadow limits. Execution disabled.',
+      description: 'Read a fresh finalized two-pool quote and the current shadow treasury policy, then check proposed GM share, single top-up limit and price impact for TAO or SN28 alpha. Wallet linking, current GM instructions and daily spending remain unverified, so execution_enabled is always false. Requires backroom:read.',
       inputSchema: treasuryPreviewInputSchema,
       annotations: toolAnnotations('read'),
     },
