@@ -610,10 +610,11 @@ insufficient on their own:
 - generic lexical retrieval of user-owned values;
 - benchmark words in prose, comments, tests, or filenames;
 - a citation to a line that cannot execute. Evidence names the trigger and the
-  effect of a causal path, so a blank line, a comment, an import or module
-  declaration, a non-`cfg` attribute, a lone closing delimiter, or a line
-  inside a `#[cfg(test)]` item is not admissible evidence and is dropped
-  before the finding is digest-bound. `#[cfg(...)]`/`#[cfg_attr(...)]` lines
+  effect of a causal path, so a blank line, a comment (by the cited file's own
+  language), a lone closing delimiter, or, in Rust, a `use`/`mod`
+  declaration, a non-`cfg` attribute, or a line inside a `#[cfg(test)]` item
+  is not admissible evidence and is dropped before the finding is
+  digest-bound. `#[cfg(...)]`/`#[cfg_attr(...)]` lines
   remain admissible because a reachability gate can genuinely be the trigger,
   and a line that carries both a signature and a body, or a statement with a
   trailing comment, is executable source. Dropping a citation is not a
