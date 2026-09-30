@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.330.16 (2026-09-30)
+
+### Bug Fixes
+
+- **screener**: Require explicit generator answer path
+  ([#2587](https://github.com/ditto-assistant/ditto-subnet/pull/2587),
+  [`7ae6be9`](https://github.com/ditto-assistant/ditto-subnet/commit/7ae6be9f8a5e7e355f894e1fb373ca0c70d0025a))
+
+
 ## v0.330.15 (2026-09-30)
 
 ### Bug Fixes
