@@ -4688,6 +4688,23 @@ def test_repository_refuses_changed_archive_after_digest_cache(
         repository._read_text("src/main.rs")
 
 
+def test_historical_environment_template_never_grants_lead_skip(tmp_path: Path) -> None:
+    manifest = tmp_path / "historical.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "origin": "public/starter",
+                "revision": "old",
+                "files": {".env.example": "a" * 64, "src/main.rs": "b" * 64},
+            }
+        )
+    )
+    assert source_review_module._trusted_starter_digests((str(manifest),)) == {
+        "src/main.rs": frozenset({"b" * 64})
+    }
+
+
 def _current_starter_kit_files() -> dict[str, bytes]:
     if not _STARTER_KIT.is_dir():
         pytest.skip("the monorepo starter kit is not part of this checkout")

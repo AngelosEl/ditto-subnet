@@ -4801,6 +4801,14 @@ def _trusted_starter_digests(
         assert isinstance(files, dict)
         for path, digest in files.items():
             assert isinstance(path, str) and isinstance(digest, str)
+            # Older append-only manifests pinned the development environment
+            # template. It is excluded from honest submission archives; never
+            # grant the new lead-skip authority to any environment file.
+            if any(
+                part == ".env" or part.startswith(".env.")
+                for part in PurePosixPath(path).parts
+            ):
+                continue
             trusted.setdefault(path, set()).add(digest)
     return {path: frozenset(digests) for path, digests in trusted.items()}
 
