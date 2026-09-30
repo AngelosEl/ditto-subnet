@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.330.11 (2026-09-30)
+
+### Bug Fixes
+
+- **screener**: Collapse duplicate L1 lead summaries for L2
+  ([#2577](https://github.com/ditto-assistant/ditto-subnet/pull/2577),
+  [`512a701`](https://github.com/ditto-assistant/ditto-subnet/commit/512a701667d6cd5b275e8cb2a51ea24ac4e5baa2))
+
+
 ## v0.330.10 (2026-09-30)
 
 ### Bug Fixes
