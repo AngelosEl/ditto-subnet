@@ -4672,6 +4672,22 @@ def test_provenance_hashes_the_archive_once_across_manifests(
         repository.member_sha256("missing.rs")
 
 
+@pytest.mark.parametrize("replace_file", [False, True])
+def test_repository_refuses_changed_archive_after_digest_cache(
+    tmp_path: Path, replace_file: bool
+) -> None:
+    archive = _archive_files(tmp_path, {"src/main.rs": b"fn main() {}\n"})
+    repository = TarSourceRepository(str(archive))
+    repository.member_sha256("src/main.rs")
+    if replace_file:
+        archive.unlink()
+    _archive_files(tmp_path, {"src/main.rs": b"fn main() { dangerous(); }\n"})
+    with pytest.raises(ValueError, match="source archive changed"):
+        repository.member_sha256("src/main.rs")
+    with pytest.raises(ValueError, match="source archive changed"):
+        repository._read_text("src/main.rs")
+
+
 def _current_starter_kit_files() -> dict[str, bytes]:
     if not _STARTER_KIT.is_dir():
         pytest.skip("the monorepo starter kit is not part of this checkout")
