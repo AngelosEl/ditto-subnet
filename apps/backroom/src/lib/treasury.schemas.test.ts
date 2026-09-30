@@ -58,6 +58,11 @@ describe('shadow treasury policy versions', () => {
     expect(treasurySettingsSchema.safeParse({ ...v2, mode: 'active' }).success).toBe(false)
     expect(treasurySettingsSchema.safeParse({ ...v2, gm_bps: 1 }).success).toBe(false)
     expect(treasurySettingsSchema.safeParse({ ...v2, service_buckets: [gm, gm] }).success).toBe(false)
+    expect(treasurySettingsSchema.safeParse({ ...v2, service_buckets: [{ ...gm, service_account_ref: null }] }).success).toBe(false)
+    expect(treasurySettingsSchema.safeParse({ ...v2, service_buckets: [gm, {
+      ...v2.service_buckets[1], allocation_bps: 1,
+      receiving_hotkey: 'bitsec-hotkey', receiving_coldkey: 'bitsec-coldkey',
+    }] }).success).toBe(false)
     expect(treasurySettingsSchema.safeParse({ ...v2, service_buckets: [gm, {
       ...v2.service_buckets[1], allocation_bps: 1,
     }] }).success).toBe(false)

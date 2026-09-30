@@ -171,6 +171,22 @@ async def test_v2_service_wallets_are_shadow_only_and_v1_history_is_preserved(
                 {
                     **settings["service_buckets"][1],
                     "allocation_bps": 1,
+                    "receiving_hotkey": "bitsec-receiving-hotkey",
+                    "receiving_coldkey": "bitsec-receiving-coldkey",
+                },
+            ]
+        },
+        {
+            "service_buckets": [
+                {**settings["service_buckets"][0], "service_account_ref": None},
+            ]
+        },
+        {
+            "service_buckets": [
+                settings["service_buckets"][0],
+                {
+                    **settings["service_buckets"][1],
+                    "allocation_bps": 1,
                 },
             ]
         },
