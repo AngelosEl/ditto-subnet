@@ -744,7 +744,7 @@ const MCP_CATALOG_DESCRIPTIONS: Record<string, string> = {
   rotate_v13_scorer_cohort:
     'Rotate the exact pinned V13 cohort to a unanimously signed packet after all V13 tickets drain; preserves pin history.',
   schedule_l2_report_canary:
-    'Queue one isolated exact-artifact report on an enrolled Hetzner node. source_only is the default; full_runtime additionally runs private challenges in a separate Docker namespace. Neither mode changes screening, scoring, or quarantine. Older null-SHA attempts require historicalRulingKind and historicalRulingId; the ruling SHA and current object are verified, not the old execution. Status and score count must still match. requestId is the idempotency key; terminal replays are append-only. candidate_clear is not certified benign. Without reviewSettingsRevision the claiming node posture applies. For experiments, apply_screener_review_settings to l2-report-canary or l2-report-canary-<name>, then pass that revision. Platform refuses *, bootstrap, node, worker and inherit pins. Never write node or worker scope for experiments because production resolves it. The view reports the pin and claim-bound settings_revision. Requires backroom:write and confirmation QUEUE REPORT ONLY L2 CANARY.',
+    'Queue one isolated exact-artifact report. No screening/scoring authority. reviewSettingsRevision pins only l2-report-canary scopes; never experiment on node scopes. See tool help.',
   get_canonical_starter_fixture_preflight:
     'Read the pinned public starter tree and archive, independent review provenance, object integrity and scheduling readiness.',
   register_canonical_starter_fixture:
@@ -871,7 +871,7 @@ const MCP_CATALOG_DESCRIPTIONS: Record<string, string> = {
   get_source_release_policy:
     'Read source policy, gate version, pending/confirmed counts, and up to 25 payout receipts. Public requires completed winner emissions; never stops releases. Optional history; historyLimit defaults to 0.',
   set_burn_settings:
-    'Apply the subnet-owner emission burn as an append-only revision with expectedRevision, reason, and "APPLY BURN SETTINGS". THIS MOVES TAO. burn_share is the fraction of miner emission routed to the owner burn hotkey; the remainder is normalized across the eligible miner weights, so it scales the competitive vector WITHOUT re-ordering it. Validators pick it up on their next ledger read, but one that already submitted this epoch keeps its vector until the next, so the subnet-wide effect lands over roughly an epoch.',
+    'Apply a burn revision with expectedRevision, reason and "APPLY BURN SETTINGS". MOVES TAO; scales miner weights without reranking. Fleet effect takes an epoch. See tool help.',
   get_burn_settings:
     'Read the emission burn in force, the miner share it leaves, the governing revision, and how many validators are live enough to fold it. Revision history is newest-first and opt-in; historyLimit defaults to 0.',
   get_emission_eligibility_policy:
@@ -2487,7 +2487,7 @@ export function createBackroomMcpServer(props: McpGrantProps) {
     'schedule_l2_report_canary',
     {
       title: 'Schedule report-only L2 canary',
-      description: 'Queue one report-only V13 L2 audit on Hetzner; no authority change. Historical rulings verify current objects, not old execution; candidate_clear is not certified benign. requestId is idempotent. reviewSettingsRevision accepts only l2-report-canary scopes; never change node/worker scopes for experiments. Omitted pin uses the claiming node posture. See get_backroom_tool_help for historical and pin rules. Requires backroom:write and confirmation "QUEUE REPORT ONLY L2 CANARY".',
+      description: 'Queue one isolated exact-artifact report on an enrolled Hetzner node. source_only is the default; full_runtime additionally runs private challenges in a separate Docker namespace. Neither mode changes screening, scoring, or quarantine. Older null-SHA attempts require historicalRulingKind and historicalRulingId; the ruling SHA and current object are verified, not the old execution. Status and score count must still match. requestId is the idempotency key; terminal replays are append-only. candidate_clear is not certified benign. Without reviewSettingsRevision the claiming node posture applies. For experiments, apply_screener_review_settings to l2-report-canary or l2-report-canary-<name>, then pass that revision. Platform refuses *, bootstrap, node, worker and inherit pins. Never write node or worker scope for experiments because production resolves it. The view reports the pin and claim-bound settings_revision. Requires backroom:write and confirmation "QUEUE REPORT ONLY L2 CANARY".',
       inputSchema: scheduleL2ReportCanaryInputSchema,
       annotations: toolAnnotations('write', true),
     },
