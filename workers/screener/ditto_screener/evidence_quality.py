@@ -35,6 +35,7 @@ Two exemptions keep the filter from eating load-bearing evidence:
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from ditto_screener.rust_test_items import test_only_item_lines
@@ -88,7 +89,7 @@ def citation_admissibility(
     text: str | None,
     line: int,
     *,
-    runtime_paths: frozenset[str] = frozenset(),
+    runtime_paths: frozenset[str] | Callable[[], frozenset[str]] = frozenset(),
 ) -> Admissibility:
     """Classify one ``path:line`` citation against the submitted source.
 
@@ -107,11 +108,16 @@ def citation_admissibility(
     executable (a Cargo target, ``include!``/``#[path]``, a script the
     Dockerfile runs). A ``tests/`` or ``benches/`` directory name does not make
     such a file inert, so it is exempt from the test-path rule; the comment,
-    blank, and ``#[cfg(test)]`` checks still apply.
+    blank, and ``#[cfg(test)]`` checks still apply. It may be passed as a
+    callable, resolved only when a citation's path looks test-only.
     """
     normalized = path.removeprefix("./")
-    if _TEST_PATH.search(normalized) and normalized not in runtime_paths:
-        return Admissibility(False, "test-only-path")
+    if _TEST_PATH.search(normalized):
+        if callable(runtime_paths):
+            # Resolved only here: it walks every Rust member of the archive.
+            runtime_paths = runtime_paths()
+        if normalized not in runtime_paths:
+            return Admissibility(False, "test-only-path")
     if text is None:
         return ADMISSIBLE
     raw_lines = text.splitlines()

@@ -295,3 +295,27 @@ def test_served_rust_beside_a_test_item_stays_citable(
     if test_only is not None:
         verdict = citation_admissibility("src/lib.rs", source, test_only)
         assert verdict.reason == "cfg-test-only"
+
+
+def test_runtime_paths_are_resolved_only_for_a_test_directory_citation() -> None:
+    """Resolving runtime paths reads every Rust member of the archive.
+
+    Only the test-path rule consults them, so any other citation must not pay
+    for that walk.
+    """
+    resolved: list[str] = []
+
+    def runtime_paths() -> frozenset[str]:
+        resolved.append("resolved")
+        return frozenset({"tests/serve.rs"})
+
+    source = "fn serve() { run(); }\n"
+    assert citation_admissibility(
+        "src/main.rs", source, 1, runtime_paths=runtime_paths
+    ).admissible
+    assert resolved == []
+
+    assert citation_admissibility(
+        "tests/serve.rs", source, 1, runtime_paths=runtime_paths
+    ).admissible
+    assert resolved == ["resolved"]

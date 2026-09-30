@@ -1699,7 +1699,7 @@ class SourceReviewAdjudicator:
                 normalized,
                 repository.member_text(normalized),
                 line,
-                runtime_paths=repository.runtime_paths(),
+                runtime_paths=repository.runtime_paths,
             ).admissible:
                 admissible.append(SourceReviewCitation(path=normalized, line=line))
         if not admissible:

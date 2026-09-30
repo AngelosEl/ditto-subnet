@@ -4387,7 +4387,7 @@ def _parse_review(
             cited_path,
             repository.member_text(cited_path),
             cited_line,
-            runtime_paths=repository.runtime_paths(),
+            runtime_paths=repository.runtime_paths,
         )
         if verdict.admissible:
             admissible_evidence.append(item)

@@ -6389,3 +6389,32 @@ def test_served_rust_after_a_braceless_cfg_test_module_stays_high(
     assert observation.categories == ("benchmark_emulation",)
     decision = _production_engine_decision(observation)
     assert decision["disposition"] == SourceReviewInvariantDisposition.BREACH.value
+
+
+def test_parse_review_resolves_runtime_paths_only_for_test_directory_citations(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The runtime-path walk reopens the archive for every Rust member.
+
+    Its cost grows quadratically with the member count (minutes for a few
+    thousand files), and only a tests/ or benches/ citation needs it.
+    """
+    agent = (
+        "def answer(case_id):\n    return open('/root/expected_answers.json').read()\n"
+    )
+    repo = TarSourceRepository(
+        str(_archive_files(tmp_path, {"src/agent.py": agent.encode()}))
+    )
+
+    def unexpected(_repository: TarSourceRepository) -> frozenset[str]:
+        raise AssertionError("runtime paths resolved for a src/ citation")
+
+    monkeypatch.setattr(TarSourceRepository, "_explicit_runtime_paths", unexpected)
+
+    observation = source_review_module._parse_review(
+        _high_risk_review("src/agent.py", (1, 2)),
+        artifact_sha256=_SHA,
+        repository=repo,
+    )
+
+    assert observation.risk_level == "high"
