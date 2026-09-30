@@ -2,6 +2,26 @@
 
 <!-- version list -->
 
+## v0.331.4 (2026-09-30)
+
+### Bug Fixes
+
+- Redact public continual retest seeds
+  ([#2595](https://github.com/ditto-assistant/ditto-subnet/pull/2595),
+  [`acf5f5d`](https://github.com/ditto-assistant/ditto-subnet/commit/acf5f5debe9414cd296c8f9f5d882f406872bed7))
+
+- **platform**: Bind L2 report canaries to a pinned review-settings revision
+  ([#2562](https://github.com/ditto-assistant/ditto-subnet/pull/2562),
+  [`614deee`](https://github.com/ditto-assistant/ditto-subnet/commit/614deee804f8de248f0453740bde8b8903305b9c))
+
+- **screener**: Retain served Rust cfg test citations
+  ([`84fbf51`](https://github.com/ditto-assistant/ditto-subnet/commit/84fbf51a27c4f66ca8f922083b9b1abd6834e0c6))
+
+- **validator**: Reject ledger rows below the signed-receipt contract
+  ([#2592](https://github.com/ditto-assistant/ditto-subnet/pull/2592),
+  [`0dd32f3`](https://github.com/ditto-assistant/ditto-subnet/commit/0dd32f3e296e52a3f89c10f4ce075488de7ac22b))
+
+
 ## v0.331.3 (2026-09-30)
 
 ### Bug Fixes
